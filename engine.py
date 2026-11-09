@@ -1,17 +1,16 @@
-import os, json, re, time, datetime, hashlib, shutil, random, textwrap
+# engine.py
+import os, json, re, time, datetime, hashlib, shutil, random
 from pathlib import Path
 from urllib.parse import urljoin, quote
 from bs4 import BeautifulSoup
 
 import feedparser
-import requests  # Keep this for Telegram and Facebook
+import requests
 import schedule
 from PIL import Image, ImageDraw, ImageFont
 import ollama
 
-# This is the bypass library
 from curl_cffi import requests as cffi_requests 
-
 from secrets import *
 
 # ---------- CONFIGURATION & FOLDERS ----------
@@ -52,7 +51,7 @@ def load_memory():
 def save_to_memory(headline, summary):
     memory = load_memory()
     memory.insert(0, {"date": str(datetime.date.today()), "headline": headline, "summary": summary[:200]})
-    MEMORY_FILE.write_text(json.dumps(memory[:10], indent=2)) # Keep last 10
+    MEMORY_FILE.write_text(json.dumps(memory[:10], indent=2))
 
 # ---------- TIERED SOURCES ----------
 DEFAULT_SOURCES = {
@@ -78,8 +77,7 @@ def save_sources(sources):
 # ---------- RESEARCH & SCRAPING ----------
 def get_full_article(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=15)
+        r = cffi_requests.get(url, impersonate="chrome120", timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
         paragraphs = soup.find_all('p')
         text = "\n".join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 40])
@@ -89,8 +87,7 @@ def get_full_article(url):
 
 def get_cross_references(title):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(f"https://html.duckduckgo.com/html/?q={quote(title)}", headers=headers, timeout=10)
+        r = cffi_requests.get(f"https://html.duckduckgo.com/html/?q={quote(title)}", impersonate="chrome120", timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
         snippets = soup.find_all('a', class_='result__snippet')
         return "\n".join([s.get_text().strip() for s in snippets[:3]])
@@ -100,9 +97,8 @@ def get_cross_references(title):
 def check_social_trends():
     print("[SOCIAL] Scanning social media temperature...")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
         query = "site:facebook.com OR site:x.com \"Paranaque\" news"
-        r = requests.get(f"https://html.duckduckgo.com/html/?q={quote(query)}", headers=headers, timeout=10)
+        r = cffi_requests.get(f"https://html.duckduckgo.com/html/?q={quote(query)}", impersonate="chrome120", timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
         results = soup.find_all('a', class_='result__snippet')
         
@@ -117,15 +113,14 @@ def check_social_trends():
 def discover_new_sources():
     print("[DISCOVERY] Searching for new credible sources...")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get("https://html.duckduckgo.com/html/?q=Paranaque+news+RSS", headers=headers, timeout=10)
+        r = cffi_requests.get("https://html.duckduckgo.com/html/?q=Paranaque+news+RSS", impersonate="chrome120", timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
         links = soup.find_all('a', class_='result__url')
         
         sources = load_sources()
         existing_urls = [url for tier in sources.values() for url in tier]
         
-        for link in links[:2]: # Check top 2 results to avoid overloading
+        for link in links[:2]:
             domain = link.get_text().strip()
             if domain and not any(domain in url for url in existing_urls):
                 prompt = f"Is '{domain}' a reputable news website or official government site in the Philippines? Reply with ONLY a number from 0.0 to 1.0."
@@ -179,7 +174,7 @@ ANGLES = [
 ]
 
 PROMPT_TEMPLATE = """You are the Editor-in-Chief of Pahayagang Palanyag.
-Your tone is straight, factual, evidence-based, educational, and an elegant writer.
+Your tone is straight, factual, evidence-based, educational, and elegantly written.
 
 ### LOCAL CONTEXT
 {context}
@@ -197,16 +192,12 @@ Your tone is straight, factual, evidence-based, educational, and an elegant writ
 Source: {source} (Tier: {tier})
 Title: {title}
 Text:
-
+{text}
 
 ### TASK
-Write a 4-6 paragraph editorial answering: What happened? Why does it matter? What is the hidden context? 
+Write a 4-6 paragraph editorial answering: What happened? Why does it matter to Parañaque? What is the hidden context? 
 Adopt this lens: **{angle}**
 Write a SEPARATE 2-sentence social hook (Facebook caption).
-Give a credibility score (0.0 to 1.0).
-Give an image credit line.
-
-You MUST return ONLY a valid JSON object matching this exact schema: {schema}
 """
 
 def ai_write(article):
@@ -220,34 +211,20 @@ def ai_write(article):
     print(f"[AI] Writing with angle: {angle} | Tier: {article['tier']}")
     
     prompt = PROMPT_TEMPLATE.format(
-        context=context_str,
-        social_trends=social_str,
-        memory=memory_str or "None",
-        cross_refs=cross_refs, 
-        source=article["source"], 
-        title=article["title"],
-        tier=article["tier"], 
-        text=full_text[:3000], 
-        angle=angle,
-        schema=json.dumps(SCHEMA) # Pass the schema directly into the text
+        context=context_str, social_trends=social_str, memory=memory_str or "None",
+        cross_refs=cross_refs, source=article["source"], title=article["title"],
+        tier=article["tier"], text=full_text[:3000], angle=angle
     )
     
     resp = ollama.chat(
         model=MODEL_NAME, 
         messages=[{"role": "user", "content": prompt}],
         format=SCHEMA, 
-        options={
-            "temperature": 0.4,      
-            "num_predict": 2048,
-            "num_ctx": 8192         
-        }
+        options={"temperature": 0.4, "num_predict": 2048, "num_ctx": 8192}
     )
     
     raw_output = resp["message"]["content"].strip()
-    
     if not raw_output:
-        print(f"[AI] Error: The model returned an empty response.")
-        print(f"Prompt length was: {len(prompt)} characters.")
         raise ValueError("Empty response from Ollama")
         
     try:
@@ -257,8 +234,6 @@ def ai_write(article):
         raise
 
 # ---------- IMAGE COMPOSER ----------
-from curl_cffi import requests as cffi_requests
-
 def download_image(article_url, save_path, headline):
     print(f"[IMG] Attempting to scrape: {article_url}")
     try:
@@ -284,7 +259,6 @@ def download_image(article_url, save_path, headline):
         print(f"[IMG] ❌ Scrape failed: {e}")
 
     print("[IMG] 🎨 Generating fallback gradient image...")
-    # Fallback: Create a nice gradient
     img = Image.new("RGB", (1200, 630), (10, 25, 50))
     draw = ImageDraw.Draw(img)
     for y in range(630):
@@ -295,61 +269,91 @@ def download_image(article_url, save_path, headline):
     img.save(save_path)
     return True
 
-import textwrap
-
-def compose_image(source_img_path, headline, credit, out_path):
+def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
     img = Image.open(source_img_path).convert("RGBA").resize((1200, 630))
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    # Perfectly sized box: 160px wide, 60px tall (Top Right)
-    box_x1, box_y1 = 1040, 0
-    box_x2, box_y2 = 1200, 60
-    draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill=(255, 255, 255, 160)) 
     
+    # --- 1. BASE IMAGE WITH LOGO (For Website) ---
+    logo_img = img.copy()
+    draw_logo = ImageDraw.Draw(logo_img)
+
+    # Large solid white box in top right
+    box_x1, box_y1 = 1020, 0
+    box_x2, box_y2 = 1200, 150
+    draw_logo.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill=(255, 255, 255, 255))
+
     logo_path = ASSETS_DIR / "logo.png"
     if logo_path.exists():
         logo = Image.open(logo_path).convert("RGBA")
-        logo.thumbnail((140, 50)) # Fits inside the box with 10px padding
+        # Auto-crop empty space
+        bbox = logo.getbbox()
+        if bbox:
+            logo = logo.crop(bbox)
         
-        # Calculate center position of the box
+        # Fit inside the 180x150 box
+        logo.thumbnail((160, 130))
         logo_w, logo_h = logo.size
-        pos_x = box_x1 + (160 - logo_w) // 2
-        pos_y = box_y1 + (60 - logo_h) // 2
         
-        img.paste(logo, (pos_x, pos_y), logo)
+        pos_x = box_x1 + (180 - logo_w) // 2
+        pos_y = box_y1 + (150 - logo_h) // 2
+        logo_img.paste(logo, (pos_x, pos_y), logo)
+    else:
+        print("[IMG] WARNING: Logo not found in assets folder.")
+
+    # Save the clean web version (No text overlay)
+    logo_img.convert("RGB").save(web_out_path, quality=92)
+    print(f"[IMG] Clean web image saved -> {web_out_path}")
+
+    # --- 2. SOCIAL IMAGE WITH HEADLINE (For Facebook) ---
+    overlay = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
+    draw_text = ImageDraw.Draw(overlay)
 
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
         font = ImageFont.truetype(font_path, 34)
-        lines = textwrap.wrap(headline, width=60) 
-        if len(lines) > 3:
-            lines = lines[:3]
-            lines[-1] = lines[-1] + "..."
         font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
     except:
         font = ImageFont.load_default()
         font_small = ImageFont.load_default()
-        lines = [headline[:70]]
 
-    draw.rectangle([(20, 500), (1180, 590)], fill=(0, 0, 0, 200))
-    y_text = 515
+    # Text wrapping
+    words = headline.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = f"{current_line} {word}".strip()
+        if font.getlength(test_line) < 1100:
+            current_line = test_line
+        else:
+            if current_line: lines.append(current_line)
+            current_line = word
+    if current_line: lines.append(current_line)
+
+    if len(lines) > 3:
+        lines = lines[:3]
+        lines[-1] = lines[-1] + "..."
+
+    # Draw lower-third box
+    draw_text.rectangle([(20, 510), (1180, 590)], fill=(0, 0, 0, 200))
+    y_text = 520
     for line in lines:
-        draw.text((40, y_text), line, font=font, fill=(255, 255, 255))
-        y_text += 35 
+        draw_text.text((40, y_text), line, font=font, fill=(255, 255, 255))
+        y_text += 32 
 
-    draw.text((20, 600), credit[:100], font=font_small, fill=(200, 200, 200))
+    draw_text.text((20, 600), credit[:100], font=font_small, fill=(200, 200, 200))
 
-    Image.alpha_composite(img, overlay).convert("RGB").save(out_path, quality=92)
-    print(f"[IMG] Composed -> {out_path}")
+    # Combine and save the social version
+    final_social = Image.alpha_composite(logo_img, overlay).convert("RGB")
+    final_social.save(social_out_path, quality=92)
+    print(f"[IMG] Social image with headline saved -> {social_out_path}")
 
-# ---------- TELEGRAM ----------
+# ---------- TELEGRAM APPROVAL ----------
 def send_for_approval(image_path, source_img_path, article_data):
     headline = article_data["headline"]
     editorial = article_data["editorial"]
     social_caption = article_data["social_caption"]
     draft_id = hashlib.md5(headline.encode()).hexdigest()[:8]
-    
+    (DRAFTS_DIR / f"{draft_id}.json").write_text(json.dumps(article_data))
+
     keyboard = {"inline_keyboard": [[
         {"text": "✅ Approve", "callback_data": f"approve:{draft_id}"},
         {"text": "✏️ Edit Headline", "callback_data": f"edit:{draft_id}"},
@@ -357,7 +361,7 @@ def send_for_approval(image_path, source_img_path, article_data):
     ]]}
 
     def send_preview():
-        with open(image_path, "rb") as f:
+        with open(image_path, "rb") as f: # image_path will be draft_social.jpg
             requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": f})
         
         full_text = f"📰 *HEADLINE:*\n{headline}\n\n📱 *FACEBOOK:*\n{social_caption}\n\n📝 *EDITORIAL:*\n{editorial}\n\n(Actions below)"
@@ -385,30 +389,155 @@ def send_for_approval(image_path, source_img_path, article_data):
                     data = cq.get("data", "")
                     requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={"callback_query_id": cq["id"]})
                     
-                    if data.startswith("approve:"): 
-                        print("[TG] ✅ APPROVE clicked!")
-                        return "approve"
-                    if data.startswith("reject:"): 
-                        print("[TG] ❌ REJECT clicked!")
-                        return "reject"
+                    if data.startswith("approve:"): return "approve"
+                    if data.startswith("reject:"): return "reject"
                     if data.startswith("edit:"):
-                        print("[TG] ✏️ EDIT clicked. Waiting for new text...")
                         requests.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": "Reply with the new headline."})
                 
                 elif "message" in update and "text" in update["message"]:
                     new_headline = update["message"]["text"]
                     article_data["headline"] = new_headline
                     compose_image(source_img_path, new_headline, article_data["image_credit"], image_path)
-                    print("[TG] Headline updated and image re-composed.")
                     send_preview()
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(2)
     return None
 
+# ---------- PUBLISHING ----------
+def publish_to_facebook(image_path, caption):
+    url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
+    with open(image_path, "rb") as f:
+        r = requests.post(url, data={"message": caption, "access_token": FACEBOOK_PAGE_ACCESS_TOKEN}, files={"source": f})
+    print(f"[FB] Status: {r.status_code}")
+    if r.status_code != 200:
+        print(f"[FB] Error: {r.text}")
+
+def adsense_head():
+    client = getattr(__import__("secrets"), "ADSENSE_CLIENT_ID", "")
+    if not client: return ""
+    return f'<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={client}" crossorigin="anonymous"></script>'
+
+def publish_to_website(article_data, image_filename):
+    slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:60]
+    new_image_name = f"{slug}.jpg"
+    paragraphs = ''.join(f'<p>{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
+    
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{article_data['headline']} | Pahayagang Palanyag</title>
+    <link rel="stylesheet" href="../style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    {adsense_head()}
+</head>
+<body>
+    <header class="site-header">
+        <div class="container"><a href="../index.html" class="logo">Pahayagang Palanyag</a></div>
+    </header>
+    
+    <main class="container">
+        <header class="article-header">
+            <h1 class="article-title">{article_data['headline']}</h1>
+            <p class="credit">{article_data['image_credit']}</p>
+        </header>
+        
+        <img src="{new_image_name}" alt="{article_data['headline']}" class="hero-image-article">
+        
+        <article class="article-content">
+            {paragraphs}
+        </article>
+    </main>
+    
+    <footer class="site-footer">
+        <div class="container"><p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag.</p></div>
+    </footer>
+</body>
+</html>"""
+    
+    (ARTICLES_DIR / f"{slug}.html").write_text(html)
+    # Copy the CLEAN web image (not the one with the text)
+    shutil.copy(DRAFTS_DIR / image_filename, ARTICLES_DIR / new_image_name)
+    save_to_memory(article_data['headline'], article_data['editorial'])
+
+def update_homepage():
+    items = sorted(ARTICLES_DIR.glob("*.html"), key=os.path.getmtime, reverse=True)
+    if not items: return
+
+    featured = items[0]
+    featured_title = featured.stem.replace("-", " ").title()
+    featured_img_name = featured.with_suffix('.jpg').name
+    featured_img = f'<img src="articles/{featured_img_name}" alt="{featured_title}">' if (ARTICLES_DIR / featured_img_name).exists() else ''
+    
+    hero_html = f"""
+    <div class="hero-section">
+        <div class="hero-image-container">
+            <a href="articles/{featured.name}">{featured_img}</a>
+        </div>
+        <div class="hero-content">
+            <h1><a href="articles/{featured.name}" style="text-decoration:none; color:inherit;">{featured_title}</a></h1>
+            <a href="articles/{featured.name}" class="read-more">Read Full Story &rarr;</a>
+        </div>
+    </div>
+    """
+
+    cards = ""
+    for p in items[1:13]:
+        title = p.stem.replace("-", " ").title()
+        img_name = p.with_suffix('.jpg').name
+        img_tag = f'<img src="articles/{img_name}" alt="{title}">' if (ARTICLES_DIR / img_name).exists() else ''
+        cards += f"""
+        <a href="articles/{p.name}" class="news-card">
+            {img_tag}
+            <h2>{title}</h2>
+            <span class="read-more">Read Story &rarr;</span>
+        </a>
+        """
+        
+    (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pahayagang Palanyag | Parañaque News</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    {adsense_head()}
+</head>
+<body>
+    <header class="site-header">
+        <div class="container"><a href="index.html" class="logo">Pahayagang Palanyag</a></div>
+    </header>
+    
+    <nav class="site-nav">
+        <a href="#">News</a><a href="#">Politics</a><a href="#">Metro Manila</a><a href="#">Opinion</a>
+    </nav>
+
+    <main class="container">
+        {hero_html}
+        <h2 class="section-title">Latest News</h2>
+        <div class="news-grid">
+            {cards}
+        </div>
+    </main>
+    
+    <footer class="site-footer">
+        <div class="container"><p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag.</p></div>
+    </footer>
+</body>
+</html>""")
+    print("[WEB] ✅ Homepage updated with clean Magazine layout")
+
+# ---------- MAIN CYCLE ----------
 def full_cycle():
-    print(f"\n[{datetime.datetime.now()}] Cycle start")
-    # discover_new_sources() # Temporarily commented out to speed up testing
+    print(f"\n[{datetime.datetime.now()}] cycle start")
+    discover_new_sources()
     articles = fetch_articles(2)
     if not articles: return
     
@@ -421,25 +550,31 @@ def full_cycle():
 
     source_img = ASSETS_DIR / "source_image.jpg"
     if not download_image(art["link"], source_img, data["headline"]):
-        print("[IMG] Using placeholder blue box.")
         Image.new("RGB", (1200, 630), (20, 40, 80)).save(source_img)
 
-    img_out = DRAFTS_DIR / "draft.jpg"
-    compose_image(source_img, data["headline"], data["image_credit"], img_out)
+    # Generate the two distinct images
+    social_img = DRAFTS_DIR / "draft_social.jpg"
+    web_img = DRAFTS_DIR / "draft_web.jpg"
+    compose_image(source_img, data["headline"], data["image_credit"], social_img, web_img)
 
-    action = send_for_approval(img_out, source_img, data)
+    # Telegram sees the social image (with text)
+    action = send_for_approval(social_img, source_img, data)
 
     if action == "approve":
+        slug = re.sub(r"[^a-z0-9]+", "-", data["headline"].lower()).strip("-")[:60]
+        article_url = f"https://pahayagangpalanyag.pages.dev/articles/{slug}.html"
+        caption_with_link = f"{data['social_caption']}\n\nRead the full story here: {article_url}"
+        
         print("[PUBLISH] Posting to Facebook...")
-        publish_to_facebook(img_out, data["social_caption"])
+        publish_to_facebook(social_img, caption_with_link)
         
         print("[PUBLISH] Writing to Website...")
-        publish_to_website(data, "draft.jpg")
+        # Pass the web_img filename so the website gets the clean version
+        publish_to_website(data, "draft_web.jpg")
         update_homepage()
         
         print("[GIT] Pushing to Cloudflare...")
         os.chdir(WEBSITE_DIR)
-        # Using subprocess to prevent Git from hanging on password prompts
         import subprocess
         subprocess.run(["git", "add", "."], check=False)
         subprocess.run(["git", "commit", "-m", "Auto-publish new article"], check=False)
@@ -451,273 +586,7 @@ def full_cycle():
     else:
         print("[PUBLISH] Aborted by user.")
 
-# ---------- PUBLISHING ----------
-def publish_to_facebook(image_path, caption):
-    print(f"[FB] Attempting to post to Page ID: {FACEBOOK_PAGE_ID}")
-    url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
-    with open(image_path, "rb") as f:
-        r = requests.post(url, data={
-            "message": caption, 
-            "access_token": FACEBOOK_PAGE_ACCESS_TOKEN
-        }, files={"source": f})
-    
-    if r.status_code == 200:
-        print(f"[FB] ✅ Successfully published to Facebook!")
-    else:
-        print(f"[FB] ❌ FAILED with status {r.status_code}")
-        print(f"[FB] Facebook Error Details: {r.text}")
-
-def adsense_head():
-    client = getattr(__import__("secrets"), "ADSENSE_CLIENT_ID", "")
-    if not client: return ""
-    return f'<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={client}" crossorigin="anonymous"></script>'
-
-def publish_to_website(article_data, image_filename):
-    slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:60]
-    new_image_name = f"{slug}.jpg"
-    
-    # Clean paragraph formatting
-    paragraphs = ''.join(f'<p>{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
-    
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{article_data['headline']} | Pahayagang Palanyag</title>
-    <link rel="stylesheet" href="../style.css">
-    {adsense_head()}
-</head>
-<body>
-    <header class="site-header">
-        <div class="container">
-            <a href="../index.html" class="logo">Pahayagang Palanyag</a>
-        </div>
-    </header>
-    
-    <main class="container">
-        <header class="article-header">
-            <h1 class="article-title">{article_data['headline']}</h1>
-            <p class="credit">{article_data['image_credit']}</p>
-        </header>
-        
-        <img src="{new_image_name}" alt="{article_data['headline']}" class="hero-image">
-        
-        <article class="article-content">
-            {paragraphs}
-        </article>
-    </main>
-    
-    <footer class="site-footer">
-        <div class="container">
-            <p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag. All rights reserved.</p>
-        </div>
-    </footer>
-</body>
-</html>"""
-    
-    (ARTICLES_DIR / f"{slug}.html").write_text(html)
-    shutil.copy(DRAFTS_DIR / image_filename, ARTICLES_DIR / new_image_name)
-    save_to_memory(article_data['headline'], article_data['editorial'])
-    print(f"[WEB] Wrote articles/{slug}.html and {new_image_name}")
-
-def update_homepage():
-    items = sorted(ARTICLES_DIR.glob("*.html"), key=os.path.getmtime, reverse=True)
-    
-    if not items:
-        (WEBSITE_DIR / "index.html").write_text("<!DOCTYPE html><html><body><h1>No articles yet.</h1></body></html>")
-        return
-
-    # 1. Get the newest article for the "Featured" slot
-    featured = items[0]
-    featured_title = featured.stem.replace("-", " ").title()
-    featured_img_name = featured.with_suffix('.jpg').name
-    featured_img = f'<img src="articles/{featured_img_name}" alt="{featured_title}">' if (ARTICLES_DIR / featured_img_name).exists() else ''
-    
-    featured_html = f"""
-    <div style="margin-bottom: 50px;">
-        <h2 class="section-title">Top Story</h2>
-        <a href="articles/{featured.name}" class="news-card" style="flex-direction: row; align-items: center; gap: 30px; padding: 20px;">
-            <div style="flex: 1; min-width: 300px;">
-                {featured_img.replace('height: 200px;', 'height: 300px;')}
-            </div>
-            <div style="flex: 1;">
-                <h2 style="font-size: 2.2rem; margin-bottom: 15px;">{featured_title}</h2>
-                <span class="read-more">Read Full Story &rarr;</span>
-            </div>
-        </a>
-    </div>
-    """
-
-    # 2. Loop through the rest for the grid
-    cards = ""
-    for p in items[1:20]:
-        title = p.stem.replace("-", " ").title()
-        img_name = p.with_suffix('.jpg').name
-        img_tag = f'<img src="articles/{img_name}" alt="{title}">' if (ARTICLES_DIR / img_name).exists() else ''
-        
-        cards += f"""
-        <a href="articles/{p.name}" class="news-card">
-            {img_tag}
-            <div class="card-content">
-                <h2>{title}</h2>
-                <span class="read-more">Read Story &rarr;</span>
-            </div>
-        </a>
-        """
-        
-    (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pahayagang Palanyag | Parañaque News</title>
-    <link rel="stylesheet" href="style.css">
-    {adsense_head()}
-</head>
-<body>
-    <header class="site-header">
-        <div class="container">
-            <a href="index.html" class="logo">Pahayagang Palanyag</a>
-        </div>
-    </header>
-    
-    <main class="container">
-        {featured_html}
-        <h2 class="section-title">Latest News</h2>
-        <div class="news-grid">
-            {cards}
-        </div>
-    </main>
-    
-    <footer class="site-footer">
-        <div class="container">
-            <p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag.</p>
-        </div>
-    </footer>
-</body>
-</html>""")
-    print("[WEB] Homepage rebuilt with a Featured Story and Grid layout")
-
-def update_homepage():
-    items = sorted(ARTICLES_DIR.glob("*.html"), key=os.path.getmtime, reverse=True)
-    
-    if not items:
-        print("[WEB] No articles found.")
-        return
-
-    # Featured Story (Newest)
-    featured = items[0]
-    featured_title = featured.stem.replace("-", " ").title()
-    featured_img_name = featured.with_suffix('.jpg').name
-    featured_img = f'<img src="articles/{featured_img_name}" alt="{featured_title}" style="width:100%; height:300px; object-fit:cover;">' if (ARTICLES_DIR / featured_img_name).exists() else ''
-    
-    featured_html = f"""
-    <div style="margin-bottom: 50px;">
-        <h2 class="section-title">Top Story</h2>
-        <a href="articles/{featured.name}" class="news-card" style="flex-direction: row; align-items: center; gap: 30px; padding: 20px; display: flex;">
-            <div style="flex: 1; min-width: 300px;">
-                {featured_img}
-            </div>
-            <div style="flex: 1;">
-                <h2 style="font-size: 2.2rem; margin-bottom: 15px;">{featured_title}</h2>
-                <span class="read-more">Read Full Story &rarr;</span>
-            </div>
-        </a>
-    </div>
-    """
-
-    # Grid for the rest
-    cards = ""
-    for p in items[1:20]:
-        title = p.stem.replace("-", " ").title()
-        img_name = p.with_suffix('.jpg').name
-        img_tag = f'<img src="articles/{img_name}" alt="{title}">' if (ARTICLES_DIR / img_name).exists() else ''
-        
-        cards += f"""
-        <a href="articles/{p.name}" class="news-card">
-            {img_tag}
-            <div class="card-content">
-                <h2>{title}</h2>
-                <span class="read-more">Read Story &rarr;</span>
-            </div>
-        </a>
-        """
-        
-    html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pahayagang Palanyag | Parañaque News</title>
-    <link rel="stylesheet" href="style.css">
-    {adsense_head()}
-</head>
-<body>
-    <header class="site-header">
-        <div class="container">
-            <a href="index.html" class="logo">Pahayagang Palanyag</a>
-        </div>
-    </header>
-    
-    <main class="container">
-        {featured_html}
-        <h2 class="section-title">Latest News</h2>
-        <div class="news-grid">
-            {cards}
-        </div>
-    </main>
-    
-    <footer class="site-footer">
-        <div class="container">
-            <p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag.</p>
-        </div>
-    </footer>
-</body>
-</html>"""
-    
-    # Force write to the file
-    index_path = WEBSITE_DIR / "index.html"
-    index_path.write_text(html_content, encoding='utf-8')
-    print(f"[WEB] ✅ Successfully overwrote {index_path}")
-
-# ---------- MAIN CYCLE ----------
-def full_cycle():
-    print(f"\n[{datetime.datetime.now()}] cycle start")
-    discover_new_sources()
-    articles = fetch_articles(2)
-    if not articles: return
-    
-    art = articles[0]
-    print(f"[AI] Writing: {art['title'][:60]}")
-    try: data = ai_write(art)
-    except Exception as e:
-        print(f"[AI] failed: {e}"); return
-
-    source_img = ASSETS_DIR / "source_image.jpg"
-    if not download_image(art["link"], source_img, data["headline"]):
-        Image.new("RGB", (1200, 630), (20, 40, 80)).save(source_img)
-
-    img_out = DRAFTS_DIR / "draft.jpg"
-    compose_image(source_img, data["headline"], data["image_credit"], img_out)
-
-    action = send_for_approval(img_out, source_img, data)
-
-    if action == "approve":
-        # Create the URL based on the headline
-        slug = re.sub(r"[^a-z0-9]+", "-", data["headline"].lower()).strip("-")[:60]
-        article_url = f"https://pahayagang.palanyag.workers.dev/articles/{slug}.html"
-        
-        # Add the link to the caption
-        caption_with_link = f"{data['social_caption']}\n\nRead the full story here: {article_url}"
-        
-        print("[PUBLISH] Posting to Facebook...")
-        publish_to_facebook(img_out, caption_with_link)
-        
-        print("[PUBLISH] Writing to Website...")
-        publish_to_website(data, "draft.jpg")
-        update_homepage()
-
+# ---------- SCHEDULE ----------
 if __name__ == "__main__":
     print("Engine running. Deep-Research mode active.")
     full_cycle()
