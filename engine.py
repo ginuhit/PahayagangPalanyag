@@ -324,6 +324,7 @@ def download_image(article_url, save_path, headline):
 
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
     original_img = Image.open(source_img_path).convert("RGBA")
+    logo_path = ASSETS_DIR / "logo_icon.png" if (ASSETS_DIR / "logo_icon.png").exists() else ASSETS_DIR / "logo.png"
     
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
@@ -336,8 +337,7 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     clean_credit = credit if credit and credit.lower() not in ["none", "null", ""] else "Photo via Source Article"
     credit_text = f"📷 {clean_credit}"
 
-    def add_smoked_glass_credit(base_img, text):
-        # Create a gradient from transparent to black at the bottom
+    def add_smoked_glass(base_img, text, is_social=False):
         overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         grad_height = 80
@@ -345,23 +345,35 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
             alpha = int(200 * (y / grad_height))
             draw.line([(0, base_img.height - grad_height + y), (base_img.width, base_img.height - grad_height + y)], fill=(0, 0, 0, alpha))
         draw.text((20, base_img.height - 30), text[:150], font=font_small, fill=(220, 220, 220))
+        
+        # Draw Logo (Top Right, square)
+        if logo_path.exists():
+            logo = Image.open(logo_path).convert("RGBA")
+            bbox = logo.getbbox()
+            if bbox: logo = logo.crop(bbox)
+            box_size = 100
+            box_x1 = base_img.width - box_size - 20
+            box_y1 = 0
+            draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
+            logo.thumbnail((80, 80))
+            logo_w, logo_h = logo.size
+            base_img.paste(logo, (box_x1 + (box_size - logo_w) // 2, box_y1 + (box_size - logo_h) // 2), logo)
+            
         return Image.alpha_composite(base_img, overlay)
 
-    # --- A. WEBSITE IMAGE (Full size, NO cropping, Gradient Credit) ---
-    web_img = original_img.copy()
-    # We don't resize the width, we just let the browser handle it via CSS
-    web_img = add_smoked_glass_credit(web_img, credit_text)
+    # --- A. WEBSITE IMAGE (No cropping) ---
+    web_img = add_smoked_glass(original_img.copy(), credit_text)
     web_img.convert("RGB").save(web_out_path, quality=92)
     print(f"[IMG] Clean web image saved -> {web_out_path}")
     
-    # --- B. SOCIAL IMAGE (Cropped 1200x630, WITH Headline & Gradient Credit) ---
+    # --- B. SOCIAL IMAGE (Cropped 1200x630) ---
     social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
-    social_img = add_smoked_glass_credit(social_img, credit_text)
+    social_img = add_smoked_glass(social_img, credit_text, is_social=True)
     
+    # Add Headline to Social Image
     overlay_social = Image.new("RGBA", social_img.size, (0, 0, 0, 0))
     draw_social = ImageDraw.Draw(overlay_social)
-
-    # Headline Wrapping
+    
     words = headline.split()
     lines = []
     current_line = ""
@@ -387,6 +399,77 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     final_social = Image.alpha_composite(social_img, overlay_social).convert("RGB")
     final_social.save(social_out_path, quality=92)
     print(f"[IMG] Social image with headline saved -> {social_out_path}")
+
+def send_for_approval(image_path, source_img_path, article_data):
+    headline = article_data["headline"]
+    byline = article_data.get("byline", "By Pahayagang Palanyag")
+    editorial = article_data["editorial"]
+    social_caption = article_data["social_caption"]
+    draft_id = hashlib.md5(headline.encode()).hexdigest()[:8]
+    
+    keyboard = {"inline_keyboard": [
+        [{"text": "✅ Approve & Publish", "callback_data": f"approve:{draft_id}"}],
+        [{"text": "✏️ Edit Headline", "callback_data": f"edit_headline:{draft_id}"},
+         {"text": "✏️ Edit Byline", "callback_data": f"edit_byline:{draft_id}"}],
+        [{"text": "❌ Reject", "callback_data": f"reject:{draft_id}"}]
+    ]}
+
+    def send_preview():
+        with open(image_path, "rb") as f:
+            requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": f})
+        
+        full_text = f"📰 *HEADLINE:*\n{headline}\n\n👤 *BYLINE:*\n{byline}\n\n📱 *FACEBOOK:*\n{social_caption}\n\n📝 *EDITORIAL:*\n{editorial}\n\n(Actions below)"
+        requests.post(f"{TELEGRAM_API}/sendMessage", data={
+            "chat_id": TELEGRAM_CHAT_ID, "text": full_text[:4000],
+            "reply_markup": json.dumps(keyboard), "disable_web_page_preview": True
+        })
+
+    send_preview()
+    print("[TG] Waiting for your click on Telegram...")
+    
+    offset = None
+    deadline = time.time() + 3600 
+    waiting_for = None # Tracks what we are editing
+
+    while time.time() < deadline:
+        try:
+            params = {"timeout": 25}
+            if offset: params["offset"] = offset
+            r = requests.get(f"{TELEGRAM_API}/getUpdates", params=params, timeout=35)
+            
+            for update in r.json().get("result", []):
+                offset = update["update_id"] + 1
+                
+                if "callback_query" in update:
+                    cq = update["callback_query"]
+                    data = cq.get("data", "")
+                    requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={"callback_query_id": cq["id"]})
+                    
+                    if data.startswith("approve:"): return "approve"
+                    if data.startswith("reject:"): return "reject"
+                    if data.startswith("edit_headline:"):
+                        waiting_for = "headline"
+                        requests.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": "✏️ Reply with the new headline."})
+                    if data.startswith("edit_byline:"):
+                        waiting_for = "byline"
+                        requests.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": "✏️ Reply with the new byline."})
+                
+                elif "message" in update and "text" in update["message"] and waiting_for:
+                    new_text = update["message"]["text"]
+                    
+                    if waiting_for == "headline":
+                        article_data["headline"] = new_text
+                        compose_image(source_img_path, new_text, article_data["image_credit"], image_path, image_path)
+                    elif waiting_for == "byline":
+                        article_data["byline"] = new_text
+                    
+                    waiting_for = None
+                    requests.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": "✅ Updated! Re-sending preview..."})
+                    send_preview()
+        except Exception:
+            pass
+        time.sleep(2)
+    return None
 
 # ---------- TELEGRAM APPROVAL ----------
 def send_for_approval(image_path, source_img_path, article_data):
@@ -534,7 +617,7 @@ def publish_to_website(article_data, image_filename):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{article_data['headline']} | Pahayagang Palanyag</title>
-    <link rel="icon" type="image/png" href="../logo.png">
+    <link rel="icon" type="image/png" href="../logo_icon.png">
     <link rel="stylesheet" href="../style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -544,7 +627,10 @@ def publish_to_website(article_data, image_filename):
 <body>
     <header class="site-header">
         <div class="container">
-            <a href="../index.html"><img src="../logo.png" alt="Pahayagang Palanyag" class="header-logo"></a>
+            <a href="../index.html" class="header-brand">
+                <img src="../logo_icon.png" alt="Icon" class="header-icon">
+                <span class="header-text">Pahayagang Palanyag</span>
+            </a>
         </div>
     </header>
     
@@ -571,10 +657,81 @@ def publish_to_website(article_data, image_filename):
     shutil.copy(DRAFTS_DIR / image_filename, ARTICLES_DIR / new_image_name)
     save_to_memory(article_data['headline'], article_data['editorial'])
     
-    # Ensure logo is in the articles folder for relative paths
-    if (ASSETS_DIR / "logo.png").exists():
-        shutil.copy(ASSETS_DIR / "logo.png", WEBSITE_DIR / "logo.png")
+    # Copy icons to website folder
+    if (ASSETS_DIR / "logo.png").exists(): shutil.copy(ASSETS_DIR / "logo.png", WEBSITE_DIR / "logo.png")
+    if (ASSETS_DIR / "logo_icon.png").exists(): shutil.copy(ASSETS_DIR / "logo_icon.png", WEBSITE_DIR / "logo_icon.png")
 
+def update_homepage():
+    items = sorted(ARTICLES_DIR.glob("*.html"), key=os.path.getmtime, reverse=True)
+    if not items: return
+
+    featured = items[0]
+    featured_title = featured.stem.replace("-", " ").title()
+    featured_img_name = featured.with_suffix('.jpg').name
+    featured_img = f'<img src="articles/{featured_img_name}" alt="{featured_title}">' if (ARTICLES_DIR / featured_img_name).exists() else ''
+    
+    hero_html = f"""
+    <div class="hero-section">
+        <div class="hero-image-container">
+            <a href="articles/{featured.name}">{featured_img}</a>
+        </div>
+        <div class="hero-content">
+            <h1><a href="articles/{featured.name}" style="text-decoration:none; color:inherit;">{featured_title}</a></h1>
+            <a href="articles/{featured.name}" class="read-more">Read Full Story &rarr;</a>
+        </div>
+    </div>
+    """
+
+    cards = ""
+    for p in items[1:13]:
+        title = p.stem.replace("-", " ").title()
+        img_name = p.with_suffix('.jpg').name
+        img_tag = f'<img src="articles/{img_name}" alt="{title}">' if (ARTICLES_DIR / img_name).exists() else ''
+        cards += f"""
+        <a href="articles/{p.name}" class="news-card">
+            {img_tag}
+            <h2>{title}</h2>
+            <span class="read-more">Read Story &rarr;</span>
+        </a>
+        """
+        
+    (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pahayagang Palanyag | Parañaque News</title>
+    <link rel="icon" type="image/png" href="logo_icon.png">
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    {adsense_head()}
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <a href="index.html" class="header-brand">
+                <img src="logo_icon.png" alt="Icon" class="header-icon">
+                <span class="header-text">Pahayagang Palanyag</span>
+            </a>
+        </div>
+    </header>
+    
+    <main class="container">
+        {hero_html}
+        <h2 class="section-title">Latest News</h2>
+        <div class="news-grid">
+            {cards}
+        </div>
+    </main>
+    
+    <footer class="site-footer">
+        <div class="container"><p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag.</p></div>
+    </footer>
+</body>
+</html>""")
+    print("[WEB] ✅ Homepage updated with new Header layout")
 # ---------- MAIN CYCLE ----------
 def full_cycle():
     print(f"\n[{datetime.datetime.now()}] cycle start")
@@ -625,11 +782,28 @@ def full_cycle():
         print("[PUBLISH] Aborted by user.")
 
 # ---------- SCHEDULE ----------
+def process_logo():
+    """Crops the top half of the logo to use as a clean icon."""
+    original_logo_path = ASSETS_DIR / "logo.png"
+    icon_path = ASSETS_DIR / "logo_icon.png"
+    
+    if original_logo_path.exists():
+        try:
+            img = Image.open(original_logo_path)
+            w, h = img.size
+            # Crop the top 55% of the image (the feather/book icon)
+            crop_box = (0, 0, w, int(h * 0.55))
+            icon = img.crop(crop_box)
+            icon.save(icon_path)
+            print("[SYS] ✅ Created logo_icon.png from the top half of the original logo.")
+        except Exception as e:
+            print(f"[SYS] ❌ Could not process logo: {e}")
+
 if __name__ == "__main__":
     print("Engine running. Deep-Research mode active.")
+    process_logo() # <--- This runs once on startup to make the icon
     full_cycle()
     schedule.every(4).hours.do(full_cycle)
     while True:
         schedule.run_pending()
         time.sleep(60)
-    schedule.every(30).days.do(refresh_facebook_token)

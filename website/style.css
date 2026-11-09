@@ -23,10 +23,26 @@ body {
 .site-header {
   border-bottom: 2px solid var(--text);
   padding: 20px 0;
-  text-align: center;
   background: #fff;
 }
-.header-logo { height: 60px; width: auto; }
+.header-brand {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  text-decoration: none;
+  color: var(--text);
+}
+.header-icon {
+  height: 60px;
+  width: auto;
+}
+.header-text {
+  font-family: var(--serif);
+  font-size: 2.5rem;
+  font-weight: 900;
+  letter-spacing: -1px;
+}
 
 /* Hero Section */
 .hero-section {
