@@ -3,6 +3,8 @@ import os, json, re, time, datetime, hashlib, shutil, random
 from pathlib import Path
 from urllib.parse import urljoin, quote
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import feedparser
 import requests
@@ -56,11 +58,21 @@ def save_to_memory(headline, summary):
 
 # ---------- TIERED SOURCES ----------
 DEFAULT_SOURCES = {
-    "tier_1_gov": ["https://www.paranaquecity.gov.ph/feed/"],
+    "tier_1_gov": [
+        "https://www.paranaquecity.gov.ph/feed/",
+        "https://pna.gov.ph/feed" # Philippine News Agency
+    ],
     "tier_2_news": [
         "https://www.inquirer.net/fullfeed",
         "https://www.philstar.com/rss/nation",
-        "https://www.rappler.com/feed/"
+        "https://www.rappler.com/feed/",
+        "https://news.abs-cbn.com/feed/rss",
+        "https://www.gmanetwork.com/news/rss/nation/",
+        "https://mb.com.ph/feed/",
+        "https://www.manilatimes.net/feed/",
+        "https://businessmirror.com.ph/feed/",
+        "https://www.sunstar.com.ph/rss/feed",
+        "https://www.pna.gov.ph/rss/nation"
     ],
     "tier_3_social": []
 }
@@ -114,26 +126,63 @@ def check_social_trends():
 def discover_new_sources():
     print("[DISCOVERY] Searching for new credible sources...")
     try:
-        r = cffi_requests.get("https://html.duckduckgo.com/html/?q=Paranaque+news+RSS", impersonate="chrome120", timeout=10)
+        # Search for top news sites
+        query = "Philippines news site:ph"
+        r = cffi_requests.get(f"https://html.duckduckgo.com/html/?q={quote(query)}", impersonate="chrome120", timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
+        
+        # Extract the actual URLs from the search results
         links = soup.find_all('a', class_='result__url')
+        domains = []
+        for link in links:
+            url = link.get('href', '')
+            # Extract the base domain (e.g., https://www.newssite.com)
+            if url.startswith('http'):
+                parsed = urlparse(url)
+                base_domain = f"{parsed.scheme}://{parsed.netloc}"
+                domains.append(base_domain)
         
         sources = load_sources()
         existing_urls = [url for tier in sources.values() for url in tier]
         
-        for link in links[:2]:
-            domain = link.get_text().strip()
-            if domain and not any(domain in url for url in existing_urls):
-                prompt = f"Is '{domain}' a reputable news website or official government site in the Philippines? Reply with ONLY a number from 0.0 to 1.0."
-                resp = ollama.chat(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}])
-                try:
-                    score = float(re.search(r"0\.\d+|1\.0|1|0", resp['message']['content']).group())
-                    if score >= 0.7:
-                        print(f"[DISCOVERY] Added new source: {domain}")
-                        sources["tier_2_news"].append(f"https://{domain}/feed/")
-                        save_sources(sources)
-                except:
-                    pass
+        for domain in set(domains):
+            # Skip if we already have a feed from this domain
+            if any(domain in url for url in existing_urls):
+                continue
+                
+            print(f"[DISCOVERY] Found new domain: {domain}. Looking for RSS feed...")
+            
+            try:
+                # Fetch the homepage to find the hidden RSS link
+                page = cffi_requests.get(domain, impersonate="chrome120", timeout=10)
+                page_soup = BeautifulSoup(page.text, 'html.parser')
+                
+                # Find standard RSS link
+                rss_link = page_soup.find('link', type='application/rss+xml')
+                if not rss_link:
+                    continue
+                    
+                rss_url = urljoin(domain, rss_link.get('href'))
+                print(f"[DISCOVERY] Found RSS URL: {rss_url}. Testing...")
+                
+                # Test if the RSS feed is valid and has articles
+                feed = feedparser.parse(rss_url)
+                if len(feed.entries) > 0:
+                    # Ask the AI if it's reputable
+                    prompt = f"Is '{domain}' a reputable news website in the Philippines? Reply with ONLY a number from 0.0 to 1.0."
+                    resp = ollama.chat(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}])
+                    
+                    try:
+                        score = float(re.search(r"0\.\d+|1\.0|1|0", resp['message']['content']).group())
+                        if score >= 0.7:
+                            print(f"[DISCOVERY] ✅ Added new source: {domain} (Score: {score})")
+                            sources["tier_2_news"].append(rss_url)
+                            save_sources(sources)
+                    except:
+                        pass # AI failed to output a number
+            except Exception as inner_e:
+                pass # Skip this domain if the page fails to load
+                
     except Exception as e:
         print(f"[DISCOVERY] Search failed: {e}")
 
@@ -159,12 +208,18 @@ def fetch_articles(limit_per_tier=2):
 SCHEMA = {
     "type": "object",
     "properties": {
-        "headline": {"type": "string"}, "editorial": {"type": "string"},
-        "social_caption": {"type": "string"}, "credibility": {"type": "number"},
+        "headline": {"type": "string"}, 
+        "byline": {"type": "string"},
+        "editorial": {"type": "string"},
+        "social_caption": {"type": "string"}, 
+        "credibility": {"type": "number"},
         "image_credit": {"type": "string"},
     },
-    "required": ["headline", "editorial", "social_caption", "credibility", "image_credit"],
+    "required": ["headline", "byline", "editorial", "social_caption", "credibility", "image_credit"],
 }
+
+# Inside PROMPT_TEMPLATE, add this before the final sentence:
+# Provide a byline (e.g., "By the Palanyag Editorial Board" or "By a Staff Writer").
 
 PROMPT_TEMPLATE = """You are the Editor-in-Chief of Pahayagang Palanyag, a premium, independent newsroom.
 Your writing is analytical, factual, elegant, and thought-provoking. You do not write like a generic AI. You write like a seasoned human journalist.
@@ -192,10 +247,10 @@ Write a 4-6 paragraph editorial that makes the reader think for themselves and q
 
 CRITICAL INSTRUCTIONS:
 1. NO TABLOID SLOP: Do not use clichés. Do not force a narrative. 
-2. NO FORCED LOCAL ANGLES: You are a Parañaque publication, but if this story is about Cebu or national politics, do not invent a fake local connection. Instead, analyze the broader human, economic, or political reality that applies to all Filipinos. Only mention Parañaque if the story is actually about Parañaque.
-3. THE LENS: Ask the hard questions. Who benefits? Who is left behind? What is the hidden cost?
+2. NO FORCED LOCAL ANGLES: You are a Parañaque publication, but if this story is about elsewhere or national politics, do not invent a fake local connection. Instead, analyze the broader human, economic, or political reality that applies to all Filipinos. Only mention Parañaque if the story is actually about Parañaque.
+3. THE LENS: Ask the hard questions. Who benefits? Who is left behind? What is the hidden cost? Why does the story matter to the reader?
 
-Write a SEPARATE 2-sentence social hook (Facebook caption) that is sharp and intellectual.
+Write a SEPARATE 2-sentence social hook (Facebook caption) that is sharp and intellectual. Include 1-2 hashtags.
 Provide an image credit line in the format "Source Name". If unknown, use the source's domain name.
 """
 
@@ -218,7 +273,7 @@ def ai_write(article):
         model=MODEL_NAME, 
         messages=[{"role": "user", "content": prompt}],
         format=SCHEMA, 
-        options={"temperature": 0.65, "num_predict": 2048, "num_ctx": 8192}
+        options={"temperature": 0.65, "num_predict": 4096, "num_ctx": 8192} # Increased from 2048 to 4096
     )
     
     raw_output = resp["message"]["content"].strip()
@@ -268,36 +323,8 @@ def download_image(article_url, save_path, headline):
     return True
 
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
-    img = Image.open(source_img_path).convert("RGBA").resize((1200, 630))
+    original_img = Image.open(source_img_path).convert("RGBA")
     
-    logo_img = img.copy()
-    draw = ImageDraw.Draw(logo_img)
-
-    # Perfect Square Logo Box: Flush top, 20px right margin
-    margin_right = 20
-    box_size = 150
-    box_x1 = 1200 - box_size - margin_right 
-    box_y1 = 0                               
-    box_x2 = 1200 - margin_right             
-    box_y2 = box_size                        
-    
-    draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill=(255, 255, 255, 255))
-
-    logo_path = ASSETS_DIR / "logo.png"
-    if logo_path.exists():
-        logo = Image.open(logo_path).convert("RGBA")
-        bbox = logo.getbbox()
-        if bbox:
-            logo = logo.crop(bbox)
-            
-        logo.thumbnail((130, 130))
-        logo_w, logo_h = logo.size
-        pos_x = box_x1 + (box_size - logo_w) // 2
-        pos_y = box_y1 + (box_size - logo_h) // 2
-        logo_img.paste(logo, (pos_x, pos_y), logo)
-    else:
-        print("[IMG] WARNING: Logo not found in assets folder.")
-
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
         font = ImageFont.truetype(font_path, 34)
@@ -309,21 +336,32 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     clean_credit = credit if credit and credit.lower() not in ["none", "null", ""] else "Photo via Source Article"
     credit_text = f"📷 {clean_credit}"
 
-    # --- WEBSITE IMAGE (Clean, No Headline) ---
-    overlay_web = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
-    draw_web = ImageDraw.Draw(overlay_web)
-    
-    draw_web.rectangle([(0, 590), (1200, 630)], fill=(0, 0, 0, 170))
-    draw_web.text((20, 605), credit_text[:130], font=font_small, fill=(220, 220, 220))
-    
-    final_web = Image.alpha_composite(logo_img, overlay_web).convert("RGB")
-    final_web.save(web_out_path, quality=92)
-    print(f"[IMG] Clean web image saved -> {web_out_path}")
+    def add_smoked_glass_credit(base_img, text):
+        # Create a gradient from transparent to black at the bottom
+        overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        grad_height = 80
+        for y in range(grad_height):
+            alpha = int(200 * (y / grad_height))
+            draw.line([(0, base_img.height - grad_height + y), (base_img.width, base_img.height - grad_height + y)], fill=(0, 0, 0, alpha))
+        draw.text((20, base_img.height - 30), text[:150], font=font_small, fill=(220, 220, 220))
+        return Image.alpha_composite(base_img, overlay)
 
-    # --- SOCIAL IMAGE (Headline + Credit Line) ---
-    overlay_social = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
+    # --- A. WEBSITE IMAGE (Full size, NO cropping, Gradient Credit) ---
+    web_img = original_img.copy()
+    # We don't resize the width, we just let the browser handle it via CSS
+    web_img = add_smoked_glass_credit(web_img, credit_text)
+    web_img.convert("RGB").save(web_out_path, quality=92)
+    print(f"[IMG] Clean web image saved -> {web_out_path}")
+    
+    # --- B. SOCIAL IMAGE (Cropped 1200x630, WITH Headline & Gradient Credit) ---
+    social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
+    social_img = add_smoked_glass_credit(social_img, credit_text)
+    
+    overlay_social = Image.new("RGBA", social_img.size, (0, 0, 0, 0))
     draw_social = ImageDraw.Draw(overlay_social)
 
+    # Headline Wrapping
     words = headline.split()
     lines = []
     current_line = ""
@@ -340,16 +378,13 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
         lines = lines[:3]
         lines[-1] = lines[-1] + "..."
 
-    draw_social.rectangle([(20, 500), (1180, 580)], fill=(0, 0, 0, 210))
-    y_text = 510
+    draw_social.rectangle([(20, 480), (1180, 560)], fill=(0, 0, 0, 210))
+    y_text = 490
     for line in lines:
         draw_social.text((40, y_text), line, font=font, fill=(255, 255, 255))
         y_text += 32 
 
-    draw_social.rectangle([(0, 590), (1200, 630)], fill=(0, 0, 0, 170))
-    draw_social.text((20, 605), credit_text[:130], font=font_small, fill=(220, 220, 220))
-
-    final_social = Image.alpha_composite(logo_img, overlay_social).convert("RGB")
+    final_social = Image.alpha_composite(social_img, overlay_social).convert("RGB")
     final_social.save(social_out_path, quality=92)
     print(f"[IMG] Social image with headline saved -> {social_out_path}")
 
@@ -412,13 +447,76 @@ def send_for_approval(image_path, source_img_path, article_data):
     return None
 
 # ---------- PUBLISHING ----------
+def get_long_lived_token(short_lived_token):
+    """Exchanges a short-lived token for a long-lived one (valid for ~60 days)."""
+    url = "https://graph.facebook.com/v19.0/oauth/access_token"
+    params = {
+        "grant_type": "fb_exchange_token",
+        "client_id": FACEBOOK_APP_ID,       # You need to add this to secrets.py
+        "client_secret": FACEBOOK_APP_SECRET, # You need to add this to secrets.py
+        "fb_exchange_token": short_lived_token
+    }
+    r = requests.get(url, params=params)
+    data = r.json()
+    if "access_token" in data:
+        return data["access_token"]
+    else:
+        print(f"[FB] Error getting long-lived token: {data}")
+        return short_lived_token
+
+def refresh_facebook_token():
+    """Refreshes the long-lived token for another 60 days."""
+    # Note: For Page tokens, refreshing the User token and re-deriving the Page token is the safest method.
+    # However, if you have a long-lived Page token, you can use the refresh endpoint.
+    url = "https://graph.facebook.com/v19.0/oauth/refresh_access_token"
+    params = {
+        "grant_type": "fb_exchange_token",
+        "fb_exchange_token": FACEBOOK_PAGE_ACCESS_TOKEN
+    }
+    r = requests.get(url, params=params)
+    data = r.json()
+    if "access_token" in data:
+        print("[FB] ✅ Token refreshed successfully.")
+        # You would ideally save this new token to secrets.py here
+        return data["access_token"]
+    else:
+        print(f"[FB] ⚠️ Token refresh failed: {data}")
+        return FACEBOOK_PAGE_ACCESS_TOKEN
+
 def publish_to_facebook(image_path, caption):
+    global FACEBOOK_PAGE_ACCESS_TOKEN
+    
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
     with open(image_path, "rb") as f:
-        r = requests.post(url, data={"message": caption, "access_token": FACEBOOK_PAGE_ACCESS_TOKEN}, files={"source": f})
-    print(f"[FB] Status: {r.status_code}")
-    if r.status_code != 200:
-        print(f"[FB] Error: {r.text}")
+        r = requests.post(url, data={
+            "message": caption, 
+            "access_token": FACEBOOK_PAGE_ACCESS_TOKEN
+        }, files={"source": f})
+    
+    if r.status_code == 400:
+        print("[FB] Token might be expired. Attempting auto-refresh...")
+        # Try to refresh the token
+        new_token = refresh_facebook_token()
+        
+        # Retry the post with the new token
+        with open(image_path, "rb") as f:
+            r = requests.post(url, data={
+                "message": caption, 
+                "access_token": new_token
+            }, files={"source": f})
+        
+        if r.status_code == 200:
+            FACEBOOK_PAGE_ACCESS_TOKEN = new_token
+            print("[FB] ✅ Successfully posted after refreshing token!")
+            return
+        else:
+            print(f"[FB] ❌ Still failed. Error: {r.text}")
+            return
+
+    if r.status_code == 200:
+        print(f"[FB] ✅ Successfully posted! Post ID: {r.json().get('id')}")
+    else:
+        print(f"[FB] ❌ Error: {r.text}")
 
 def adsense_head():
     client = getattr(__import__("secrets"), "ADSENSE_CLIENT_ID", "")
@@ -436,6 +534,7 @@ def publish_to_website(article_data, image_filename):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{article_data['headline']} | Pahayagang Palanyag</title>
+    <link rel="icon" type="image/png" href="../logo.png">
     <link rel="stylesheet" href="../style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -444,13 +543,15 @@ def publish_to_website(article_data, image_filename):
 </head>
 <body>
     <header class="site-header">
-        <div class="container"><a href="../index.html" class="logo">Pahayagang Palanyag</a></div>
+        <div class="container">
+            <a href="../index.html"><img src="../logo.png" alt="Pahayagang Palanyag" class="header-logo"></a>
+        </div>
     </header>
     
     <main class="container">
         <header class="article-header">
             <h1 class="article-title">{article_data['headline']}</h1>
-            <p class="credit">{article_data['image_credit']}</p>
+            <p class="byline">{article_data.get('byline', 'By Pahayagang Palanyag')}</p>
         </header>
         
         <img src="{new_image_name}" alt="{article_data['headline']}" class="hero-image-article">
@@ -469,76 +570,10 @@ def publish_to_website(article_data, image_filename):
     (ARTICLES_DIR / f"{slug}.html").write_text(html)
     shutil.copy(DRAFTS_DIR / image_filename, ARTICLES_DIR / new_image_name)
     save_to_memory(article_data['headline'], article_data['editorial'])
-
-def update_homepage():
-    items = sorted(ARTICLES_DIR.glob("*.html"), key=os.path.getmtime, reverse=True)
-    if not items: return
-
-    featured = items[0]
-    featured_title = featured.stem.replace("-", " ").title()
-    featured_img_name = featured.with_suffix('.jpg').name
-    featured_img = f'<img src="articles/{featured_img_name}" alt="{featured_title}">' if (ARTICLES_DIR / featured_img_name).exists() else ''
     
-    hero_html = f"""
-    <div class="hero-section">
-        <div class="hero-image-container">
-            <a href="articles/{featured.name}">{featured_img}</a>
-        </div>
-        <div class="hero-content">
-            <h1><a href="articles/{featured.name}" style="text-decoration:none; color:inherit;">{featured_title}</a></h1>
-            <a href="articles/{featured.name}" class="read-more">Read Full Story &rarr;</a>
-        </div>
-    </div>
-    """
-
-    cards = ""
-    for p in items[1:13]:
-        title = p.stem.replace("-", " ").title()
-        img_name = p.with_suffix('.jpg').name
-        img_tag = f'<img src="articles/{img_name}" alt="{title}">' if (ARTICLES_DIR / img_name).exists() else ''
-        cards += f"""
-        <a href="articles/{p.name}" class="news-card">
-            {img_tag}
-            <h2>{title}</h2>
-            <span class="read-more">Read Story &rarr;</span>
-        </a>
-        """
-        
-    (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pahayagang Palanyag | Parañaque News</title>
-    <link rel="stylesheet" href="style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    {adsense_head()}
-</head>
-<body>
-    <header class="site-header">
-        <div class="container"><a href="index.html" class="logo">Pahayagang Palanyag</a></div>
-    </header>
-    
-    <nav class="site-nav">
-        <a href="#">News</a><a href="#">Politics</a><a href="#">Metro Manila</a><a href="#">Opinion</a>
-    </nav>
-
-    <main class="container">
-        {hero_html}
-        <h2 class="section-title">Latest News</h2>
-        <div class="news-grid">
-            {cards}
-        </div>
-    </main>
-    
-    <footer class="site-footer">
-        <div class="container"><p>&copy; {datetime.datetime.now().year} Pahayagang Palanyag.</p></div>
-    </footer>
-</body>
-</html>""")
-    print("[WEB] ✅ Homepage updated with clean Magazine layout")
+    # Ensure logo is in the articles folder for relative paths
+    if (ASSETS_DIR / "logo.png").exists():
+        shutil.copy(ASSETS_DIR / "logo.png", WEBSITE_DIR / "logo.png")
 
 # ---------- MAIN CYCLE ----------
 def full_cycle():
@@ -597,3 +632,4 @@ if __name__ == "__main__":
     while True:
         schedule.run_pending()
         time.sleep(60)
+    schedule.every(30).days.do(refresh_facebook_token)
