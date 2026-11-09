@@ -1,0 +1,7 @@
+feedparser
+requests
+Pillow
+ollama
+python-telegram-bot
+schedule
+beautifulsoup4
