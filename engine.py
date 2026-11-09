@@ -10,6 +10,7 @@ import schedule
 from PIL import Image, ImageDraw, ImageFont
 import ollama
 
+# Bypass website bot-blockers
 from curl_cffi import requests as cffi_requests 
 from secrets import *
 
@@ -165,16 +166,8 @@ SCHEMA = {
     "required": ["headline", "editorial", "social_caption", "credibility", "image_credit"],
 }
 
-ANGLES = [
-    "Focus on the everyday commuter and working class.",
-    "Focus on long-term economic impact on local businesses.",
-    "Focus on the historical context in Parañaque.",
-    "Focus on youth and future generations.",
-    "Focus on practical, granular details people need."
-]
-
-PROMPT_TEMPLATE = """You are the Editor-in-Chief of Pahayagang Palanyag.
-Your tone is straight, factual, evidence-based, educational, and elegantly written. No AI slop.
+PROMPT_TEMPLATE = """You are the Editor-in-Chief of Pahayagang Palanyag, a premium, independent newsroom.
+Your writing is analytical, factual, elegant, and thought-provoking. You do not write like a generic AI. You write like a seasoned human journalist.
 
 ### LOCAL CONTEXT
 {context}
@@ -195,16 +188,15 @@ Text:
 
 
 ### TASK
-Write a 4-6 paragraph editorial answering: What happened? Why does it matter? What is the hidden context?
-Adopt this lens: **{angle}**
+Write a 4-6 paragraph editorial that makes the reader think for themselves and question socio-civic-political implications.
 
-CRITICAL INSTRUCTION ON LOCAL RELEVANCE:
-You are a Parañaque publication, but you must NOT force a Parañaque angle if it does not genuinely exist. 
-- If the story is specifically about Parañaque, dive deep into local details.
-- If the story is national or international, focus on the broader human, economic, or political impact. Do NOT shoehorn a local connection. It feels lazy and artificial.
-- Only mention Parañaque if it is a factual, direct connection.
+CRITICAL INSTRUCTIONS:
+1. NO TABLOID SLOP: Do not use clichés. Do not force a narrative. 
+2. NO FORCED LOCAL ANGLES: You are a Parañaque publication, but if this story is about Cebu or national politics, do not invent a fake local connection. Instead, analyze the broader human, economic, or political reality that applies to all Filipinos. Only mention Parañaque if the story is actually about Parañaque.
+3. THE LENS: Ask the hard questions. Who benefits? Who is left behind? What is the hidden cost?
 
-Write a SEPARATE 2-sentence social hook (Facebook caption). Include relevant hashtags. 
+Write a SEPARATE 2-sentence social hook (Facebook caption) that is sharp and intellectual.
+Provide an image credit line in the format "Source Name". If unknown, use the source's domain name.
 """
 
 def ai_write(article):
@@ -213,21 +205,20 @@ def ai_write(article):
     memory_str = "\n".join([f"- {m['date']}: {m['headline']}" for m in load_memory()])
     context_str = load_context()
     social_str = check_social_trends()
-    angle = random.choice(ANGLES)
     
-    print(f"[AI] Writing with angle: {angle} | Tier: {article['tier']}")
+    print(f"[AI] Writing deep analysis | Tier: {article['tier']}")
     
     prompt = PROMPT_TEMPLATE.format(
         context=context_str, social_trends=social_str, memory=memory_str or "None",
         cross_refs=cross_refs, source=article["source"], title=article["title"],
-        tier=article["tier"], text=full_text[:3000], angle=angle
+        tier=article["tier"], text=full_text[:3500]
     )
     
     resp = ollama.chat(
         model=MODEL_NAME, 
         messages=[{"role": "user", "content": prompt}],
         format=SCHEMA, 
-        options={"temperature": 0.4, "num_predict": 2048, "num_ctx": 8192}
+        options={"temperature": 0.65, "num_predict": 2048, "num_ctx": 8192}
     )
     
     raw_output = resp["message"]["content"].strip()
@@ -277,16 +268,19 @@ def download_image(article_url, save_path, headline):
     return True
 
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
-    # 1. Base Image (Full size, not cropped)
     img = Image.open(source_img_path).convert("RGBA").resize((1200, 630))
     
-    # 2. Draw Logo (With margin on right)
     logo_img = img.copy()
     draw = ImageDraw.Draw(logo_img)
 
-    # Logo Box (Top right, with 20px margin)
-    box_x1, box_y1 = 1000, 20
-    box_x2, box_y2 = 1180, 140
+    # Perfect Square Logo Box: Flush top, 20px right margin
+    margin_right = 20
+    box_size = 150
+    box_x1 = 1200 - box_size - margin_right 
+    box_y1 = 0                               
+    box_x2 = 1200 - margin_right             
+    box_y2 = box_size                        
+    
     draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill=(255, 255, 255, 255))
 
     logo_path = ASSETS_DIR / "logo.png"
@@ -295,37 +289,41 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
         bbox = logo.getbbox()
         if bbox:
             logo = logo.crop(bbox)
-        logo.thumbnail((140, 100))
+            
+        logo.thumbnail((130, 130))
         logo_w, logo_h = logo.size
-        pos_x = box_x1 + (180 - logo_w) // 2
-        pos_y = box_y1 + (120 - logo_h) // 2
+        pos_x = box_x1 + (box_size - logo_w) // 2
+        pos_y = box_y1 + (box_size - logo_h) // 2
         logo_img.paste(logo, (pos_x, pos_y), logo)
+    else:
+        print("[IMG] WARNING: Logo not found in assets folder.")
 
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
         font = ImageFont.truetype(font_path, 34)
-        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
     except:
         font = ImageFont.load_default()
         font_small = ImageFont.load_default()
 
-    # --- A. WEBSITE IMAGE (Credit Line Only, No Headline) ---
+    clean_credit = credit if credit and credit.lower() not in ["none", "null", ""] else "Photo via Source Article"
+    credit_text = f"📷 {clean_credit}"
+
+    # --- WEBSITE IMAGE (Clean, No Headline) ---
     overlay_web = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
     draw_web = ImageDraw.Draw(overlay_web)
     
-    # Small black box for credit line at bottom left
-    draw_web.rectangle([(0, 590), (650, 630)], fill=(0, 0, 0, 180))
-    draw_web.text((10, 600), credit[:90], font=font_small, fill=(200, 200, 200))
+    draw_web.rectangle([(0, 590), (1200, 630)], fill=(0, 0, 0, 170))
+    draw_web.text((20, 605), credit_text[:130], font=font_small, fill=(220, 220, 220))
     
     final_web = Image.alpha_composite(logo_img, overlay_web).convert("RGB")
     final_web.save(web_out_path, quality=92)
     print(f"[IMG] Clean web image saved -> {web_out_path}")
 
-    # --- B. SOCIAL IMAGE (Headline + Credit Line) ---
+    # --- SOCIAL IMAGE (Headline + Credit Line) ---
     overlay_social = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
     draw_social = ImageDraw.Draw(overlay_social)
 
-    # Headline Wrapping
     words = headline.split()
     lines = []
     current_line = ""
@@ -342,13 +340,14 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
         lines = lines[:3]
         lines[-1] = lines[-1] + "..."
 
-    draw_social.rectangle([(20, 510), (1180, 590)], fill=(0, 0, 0, 200))
-    y_text = 520
+    draw_social.rectangle([(20, 500), (1180, 580)], fill=(0, 0, 0, 210))
+    y_text = 510
     for line in lines:
         draw_social.text((40, y_text), line, font=font, fill=(255, 255, 255))
         y_text += 32 
 
-    draw_social.text((20, 600), credit[:100], font=font_small, fill=(200, 200, 200))
+    draw_social.rectangle([(0, 590), (1200, 630)], fill=(0, 0, 0, 170))
+    draw_social.text((20, 605), credit_text[:130], font=font_small, fill=(220, 220, 220))
 
     final_social = Image.alpha_composite(logo_img, overlay_social).convert("RGB")
     final_social.save(social_out_path, quality=92)
@@ -369,7 +368,7 @@ def send_for_approval(image_path, source_img_path, article_data):
     ]]}
 
     def send_preview():
-        with open(image_path, "rb") as f: # image_path will be draft_social.jpg
+        with open(image_path, "rb") as f:
             requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": f})
         
         full_text = f"📰 *HEADLINE:*\n{headline}\n\n📱 *FACEBOOK:*\n{social_caption}\n\n📝 *EDITORIAL:*\n{editorial}\n\n(Actions below)"
@@ -405,7 +404,7 @@ def send_for_approval(image_path, source_img_path, article_data):
                 elif "message" in update and "text" in update["message"]:
                     new_headline = update["message"]["text"]
                     article_data["headline"] = new_headline
-                    compose_image(source_img_path, new_headline, article_data["image_credit"], image_path)
+                    compose_image(source_img_path, new_headline, article_data["image_credit"], image_path, image_path) # Regenerate both just in case
                     send_preview()
         except Exception:
             pass
@@ -468,7 +467,6 @@ def publish_to_website(article_data, image_filename):
 </html>"""
     
     (ARTICLES_DIR / f"{slug}.html").write_text(html)
-    # Copy the CLEAN web image (not the one with the text)
     shutil.copy(DRAFTS_DIR / image_filename, ARTICLES_DIR / new_image_name)
     save_to_memory(article_data['headline'], article_data['editorial'])
 
@@ -560,12 +558,10 @@ def full_cycle():
     if not download_image(art["link"], source_img, data["headline"]):
         Image.new("RGB", (1200, 630), (20, 40, 80)).save(source_img)
 
-    # Generate the two distinct images
     social_img = DRAFTS_DIR / "draft_social.jpg"
     web_img = DRAFTS_DIR / "draft_web.jpg"
     compose_image(source_img, data["headline"], data["image_credit"], social_img, web_img)
 
-    # Telegram sees the social image (with text)
     action = send_for_approval(social_img, source_img, data)
 
     if action == "approve":
@@ -577,7 +573,6 @@ def full_cycle():
         publish_to_facebook(social_img, caption_with_link)
         
         print("[PUBLISH] Writing to Website...")
-        # Pass the web_img filename so the website gets the clean version
         publish_to_website(data, "draft_web.jpg")
         update_homepage()
         
