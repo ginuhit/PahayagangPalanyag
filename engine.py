@@ -174,7 +174,7 @@ ANGLES = [
 ]
 
 PROMPT_TEMPLATE = """You are the Editor-in-Chief of Pahayagang Palanyag.
-Your tone is straight, factual, evidence-based, educational, and elegantly written.
+Your tone is straight, factual, evidence-based, educational, and elegantly written. No AI slop.
 
 ### LOCAL CONTEXT
 {context}
@@ -192,12 +192,19 @@ Your tone is straight, factual, evidence-based, educational, and elegantly writt
 Source: {source} (Tier: {tier})
 Title: {title}
 Text:
-{text}
+
 
 ### TASK
-Write a 4-6 paragraph editorial answering: What happened? Why does it matter to Parañaque? What is the hidden context? 
+Write a 4-6 paragraph editorial answering: What happened? Why does it matter? What is the hidden context?
 Adopt this lens: **{angle}**
-Write a SEPARATE 2-sentence social hook (Facebook caption).
+
+CRITICAL INSTRUCTION ON LOCAL RELEVANCE:
+You are a Parañaque publication, but you must NOT force a Parañaque angle if it does not genuinely exist. 
+- If the story is specifically about Parañaque, dive deep into local details.
+- If the story is national or international, focus on the broader human, economic, or political impact. Do NOT shoehorn a local connection. It feels lazy and artificial.
+- Only mention Parañaque if it is a factual, direct connection.
+
+Write a SEPARATE 2-sentence social hook (Facebook caption). Include relevant hashtags. 
 """
 
 def ai_write(article):
@@ -270,42 +277,29 @@ def download_image(article_url, save_path, headline):
     return True
 
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
+    # 1. Base Image (Full size, not cropped)
     img = Image.open(source_img_path).convert("RGBA").resize((1200, 630))
     
-    # --- 1. BASE IMAGE WITH LOGO (For Website) ---
+    # 2. Draw Logo (With margin on right)
     logo_img = img.copy()
-    draw_logo = ImageDraw.Draw(logo_img)
+    draw = ImageDraw.Draw(logo_img)
 
-    # Large solid white box in top right
-    box_x1, box_y1 = 1020, 0
-    box_x2, box_y2 = 1200, 150
-    draw_logo.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill=(255, 255, 255, 255))
+    # Logo Box (Top right, with 20px margin)
+    box_x1, box_y1 = 1000, 20
+    box_x2, box_y2 = 1180, 140
+    draw.rectangle([(box_x1, box_y1), (box_x2, box_y2)], fill=(255, 255, 255, 255))
 
     logo_path = ASSETS_DIR / "logo.png"
     if logo_path.exists():
         logo = Image.open(logo_path).convert("RGBA")
-        # Auto-crop empty space
         bbox = logo.getbbox()
         if bbox:
             logo = logo.crop(bbox)
-        
-        # Fit inside the 180x150 box
-        logo.thumbnail((160, 130))
+        logo.thumbnail((140, 100))
         logo_w, logo_h = logo.size
-        
         pos_x = box_x1 + (180 - logo_w) // 2
-        pos_y = box_y1 + (150 - logo_h) // 2
+        pos_y = box_y1 + (120 - logo_h) // 2
         logo_img.paste(logo, (pos_x, pos_y), logo)
-    else:
-        print("[IMG] WARNING: Logo not found in assets folder.")
-
-    # Save the clean web version (No text overlay)
-    logo_img.convert("RGB").save(web_out_path, quality=92)
-    print(f"[IMG] Clean web image saved -> {web_out_path}")
-
-    # --- 2. SOCIAL IMAGE WITH HEADLINE (For Facebook) ---
-    overlay = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
-    draw_text = ImageDraw.Draw(overlay)
 
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     try:
@@ -315,7 +309,23 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
         font = ImageFont.load_default()
         font_small = ImageFont.load_default()
 
-    # Text wrapping
+    # --- A. WEBSITE IMAGE (Credit Line Only, No Headline) ---
+    overlay_web = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
+    draw_web = ImageDraw.Draw(overlay_web)
+    
+    # Small black box for credit line at bottom left
+    draw_web.rectangle([(0, 590), (650, 630)], fill=(0, 0, 0, 180))
+    draw_web.text((10, 600), credit[:90], font=font_small, fill=(200, 200, 200))
+    
+    final_web = Image.alpha_composite(logo_img, overlay_web).convert("RGB")
+    final_web.save(web_out_path, quality=92)
+    print(f"[IMG] Clean web image saved -> {web_out_path}")
+
+    # --- B. SOCIAL IMAGE (Headline + Credit Line) ---
+    overlay_social = Image.new("RGBA", logo_img.size, (0, 0, 0, 0))
+    draw_social = ImageDraw.Draw(overlay_social)
+
+    # Headline Wrapping
     words = headline.split()
     lines = []
     current_line = ""
@@ -332,17 +342,15 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
         lines = lines[:3]
         lines[-1] = lines[-1] + "..."
 
-    # Draw lower-third box
-    draw_text.rectangle([(20, 510), (1180, 590)], fill=(0, 0, 0, 200))
+    draw_social.rectangle([(20, 510), (1180, 590)], fill=(0, 0, 0, 200))
     y_text = 520
     for line in lines:
-        draw_text.text((40, y_text), line, font=font, fill=(255, 255, 255))
+        draw_social.text((40, y_text), line, font=font, fill=(255, 255, 255))
         y_text += 32 
 
-    draw_text.text((20, 600), credit[:100], font=font_small, fill=(200, 200, 200))
+    draw_social.text((20, 600), credit[:100], font=font_small, fill=(200, 200, 200))
 
-    # Combine and save the social version
-    final_social = Image.alpha_composite(logo_img, overlay).convert("RGB")
+    final_social = Image.alpha_composite(logo_img, overlay_social).convert("RGB")
     final_social.save(social_out_path, quality=92)
     print(f"[IMG] Social image with headline saved -> {social_out_path}")
 
