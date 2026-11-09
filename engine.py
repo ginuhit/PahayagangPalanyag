@@ -789,13 +789,20 @@ def process_logo():
     
     if original_logo_path.exists():
         try:
-            img = Image.open(original_logo_path)
+            img = Image.open(original_logo_path).convert("RGBA")
+            
+            # 1. Remove all the empty transparent space around the logo
+            bbox = img.getbbox()
+            if bbox:
+                img = img.crop(bbox)
+                
             w, h = img.size
-            # Crop the top 55% of the image (the feather/book icon)
+            # 2. Crop the top 55% of the ACTUAL logo (the feather and book)
             crop_box = (0, 0, w, int(h * 0.55))
             icon = img.crop(crop_box)
+            
             icon.save(icon_path)
-            print("[SYS] ✅ Created logo_icon.png from the top half of the original logo.")
+            print("[SYS] ✅ Created logo_icon.png perfectly.")
         except Exception as e:
             print(f"[SYS] ❌ Could not process logo: {e}")
 
