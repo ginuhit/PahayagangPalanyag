@@ -10,22 +10,29 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); line
 .top-bar { background: #f4f4f4; border-bottom: 1px solid var(--border); padding: 8px 0; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: #666; }
 .top-bar .container { display: flex; justify-content: space-between; }
 
-/* Header - Massive and Aligned */
-.site-header { padding: 40px 0; background: #fff; text-align: center; border-bottom: 1px solid var(--border); }
+/* Header - Perfectly Aligned */
+.site-header { 
+    padding: 30px 0; 
+    background: #fff; 
+    text-align: center; 
+    border-bottom: 1px solid var(--border); 
+}
 .header-brand { 
     display: flex; 
     justify-content: center; 
-    align-items: center; 
-    gap: 25px; 
+    align-items: center; /* Centers them vertically */
+    gap: 15px; /* Space between icon and title */
     text-decoration: none; 
 }
 .header-icon { 
-    height: 120px !important; 
+    height: 110px !important; /* Same height as title */
     width: auto !important; 
+    object-fit: contain;
 }
 .header-text-img { 
-    height: 100px !important; 
+    height: 110px !important; /* Same height as icon */
     width: auto !important; 
+    object-fit: contain;
 }
 
 /* Nav */
