@@ -873,11 +873,28 @@ def fetch_articles(limit_per_tier=2):
     articles.sort(key=lambda x: x["tier"])
     return articles
 
+import sys
+
 if __name__ == "__main__":
-    print("Engine running. Browser fallback at http://localhost:5000")
+    print("Starting Pahayagang Palanyag...")
+    # Always start the web server in the background
     threading.Thread(target=run_server, daemon=True).start()
-    full_cycle()
-    schedule.every(4).hours.do(full_cycle)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    
+    if "--editor" in sys.argv:
+        print("\n" + "="*50)
+        print("🖋️  RUNNING IN EDITOR-ONLY MODE.")
+        print("👉 Go to: http://localhost:5000/write")
+        print("The AI is NOT running. Press Ctrl+C to stop.")
+        print("="*50 + "\n")
+        while True:
+            time.sleep(1) # Keeps the script running
+    else:
+        print("\n" + "="*50)
+        print("🤖 RUNNING FULL AI ENGINE.")
+        print("The AI will fetch news and send drafts to http://localhost:5000")
+        print("="*50 + "\n")
+        full_cycle()
+        schedule.every(4).hours.do(full_cycle)
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
