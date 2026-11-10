@@ -279,6 +279,8 @@ Provide a category. You MUST choose EXACTLY one from this list:
 
 Write a 2-sentence social hook.
 Provide a byline (e.g., "By the Editorial Board").
+
+CRITICAL: You MUST provide an image credit. Look at the Source Article's domain or publisher name (e.g., "INQUIRER.net", "Philstar", "Rappler"). Do NOT output "None". Output the actual name of the news organization.
 """
 
 def ai_write(article):
@@ -289,7 +291,7 @@ def ai_write(article):
     resp = ollama.chat(
         model=MODEL_NAME, messages=[{"role": "user", "content": prompt}],
         format=SCHEMA, 
-        options={"temperature": 0.6, "num_predict": 8192, "num_ctx": 8192} # Increased token limit
+        options={"temperature": 0.6, "num_predict": 8192, "num_ctx": 8192} 
     )
     return json.loads(resp["message"]["content"])
 
@@ -300,22 +302,34 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
     font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
 
+    # --- CREDIT LINE FALLBACK ---
+    # If the AI says "None", "null", or leaves it blank, provide a default.
+    clean_credit = credit.strip() if credit else ""
+    if not clean_credit or clean_credit.lower() in ["none", "null", "n/a"]:
+        clean_credit = "Photo via Source Article"
+    
+    credit_text = f"📷 {clean_credit}"
+
     def add_overlays(base_img, is_social=False):
         draw = ImageDraw.Draw(base_img, 'RGBA')
         
         # 1. MASSIVE Logo Box (Top Right)
         if logo_path.exists():
             logo = Image.open(logo_path).convert("RGBA")
-            box_size = 300 # Huge logo
+            box_size = 250 if is_social else 300 # Huge logo
             logo.thumbnail((box_size - 30, box_size - 30))
             box_x1 = base_img.width - box_size - 20
             box_y1 = 0
+            # Draw white background box
             draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
+            # Paste logo
             base_img.paste(logo, (box_x1 + (box_size - logo.width)//2, box_y1 + (box_size - logo.height)//2), logo)
+        else:
+            print("[IMG] WARNING: Logo not found in assets folder.")
 
         # 2. Credit Line
         draw.rectangle([(0, base_img.height - 40), (base_img.width, base_img.height)], fill=(0, 0, 0, 200))
-        draw.text((20, base_img.height - 30), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
+        draw.text((20, base_img.height - 30), credit_text, font=font_small, fill=(220, 220, 220))
 
         # 3. Lower Third (ONLY for Facebook)
         if is_social:
@@ -340,10 +354,12 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
                 draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
                 y_text += 45
 
+    # Website Image: Clean, no text overlay
     web_img = original_img.copy()
     add_overlays(web_img, is_social=False)
     web_img.convert("RGB").save(web_out_path, quality=92)
 
+    # Social Image: Cropped to 1200x630, WITH text overlay
     social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
     add_overlays(social_img, is_social=True)
     social_img.convert("RGB").save(social_out_path, quality=92)
@@ -363,11 +379,11 @@ def publish_to_website(article_data, image_filename):
     cat_dir = ARTICLES_DIR / cat_slug
     cat_dir.mkdir(exist_ok=True)
     
-    art_slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:60]
+    # INCREASED TO 120 CHARACTERS
+    art_slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
     new_image_name = f"{art_slug}.jpg"
     paragraphs = ''.join(f'<p>{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
     
-    # Force a decent byline if the AI or you entered something too short
     byline_text = article_data.get('byline', '').strip()
     if len(byline_text) < 3:
         byline_text = "By the Editorial Board"
@@ -412,12 +428,21 @@ def update_homepage():
     items = sorted(items, key=os.path.getmtime, reverse=True)
     if not items: return
 
+    def get_true_title(p):
+        # Reads the actual headline from the HTML file
+        try:
+            soup = BeautifulSoup(p.read_text(encoding='utf-8'), 'html.parser')
+            h1 = soup.find('h1', class_='article-title')
+            if h1: return h1.text.strip()
+        except: pass
+        return p.stem.replace("-", " ").title() # Fallback
+
     categories = [d.name for d in ARTICLES_DIR.iterdir() if d.is_dir()]
     nav_links = "".join([f'<a href="articles/{cat}/index.html">{cat.replace("-", " ").title()}</a>' for cat in categories])
     nav_html = f'<nav class="site-nav"><a href="index.html">Home</a>{nav_links}</nav>'
 
     featured = items[0]
-    f_title = featured.stem.replace("-", " ").title()
+    f_title = get_true_title(featured)
     f_img = featured.with_suffix('.jpg').name
     f_cat = featured.parent.name
     
@@ -431,7 +456,7 @@ def update_homepage():
         <div class="hero-sidebar">
     """
     for p in items[1:4]:
-        t = p.stem.replace("-", " ").title()
+        t = get_true_title(p)
         i = p.with_suffix('.jpg').name
         c = p.parent.name
         hero_html += f"""
@@ -444,7 +469,7 @@ def update_homepage():
 
     grid_cards = ""
     for p in items[4:10]:
-        t = p.stem.replace("-", " ").title()
+        t = get_true_title(p)
         i = p.with_suffix('.jpg').name
         c = p.parent.name
         grid_cards += f'<a href="articles/{c}/{p.name}" class="news-card"><img src="articles/{c}/{i}"><h2>{t}</h2></a>'
@@ -485,7 +510,7 @@ def update_homepage():
         
         cat_cards = ""
         for p in cat_items:
-            t = p.stem.replace("-", " ").title()
+            t = get_true_title(p)
             i = p.with_suffix('.jpg').name
             cat_cards += f'<a href="{p.name}" class="news-card"><img src="{i}"><h2>{t}</h2></a>'
         
@@ -512,6 +537,8 @@ def update_homepage():
     </main>
 </body>
 </html>""")
+
+    print("[WEB] ✅ Homepage and Categories updated with full headlines")
 
 # ---------- APPROVAL ----------
 def send_for_approval(source_img, social_img, web_img, article_data):
