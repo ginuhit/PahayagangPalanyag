@@ -41,18 +41,29 @@ def dashboard():
         return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>No pending drafts. The engine is running...</h1>"
     
     if request.method == 'POST':
+        action = request.form.get('action')
+        
         CURRENT_DRAFT["data"]["headline"] = request.form.get('headline')
         CURRENT_DRAFT["data"]["byline"] = request.form.get('byline')
         CURRENT_DRAFT["data"]["editorial"] = request.form.get('editorial')
         
-        compose_image(
-            CURRENT_DRAFT["source_img"], 
-            CURRENT_DRAFT["data"]["headline"], 
-            CURRENT_DRAFT["data"]["image_credit"], 
-            CURRENT_DRAFT["social_img"], 
-            CURRENT_DRAFT["web_img"]
-        )
-        return "<script>alert('Draft updated!'); window.location.href='/';</script>"
+        if action == 'update':
+            compose_image(
+                CURRENT_DRAFT["source_img"], 
+                CURRENT_DRAFT["data"]["headline"], 
+                CURRENT_DRAFT["data"]["image_credit"], 
+                CURRENT_DRAFT["social_img"], 
+                CURRENT_DRAFT["web_img"]
+            )
+            return "<script>alert('Draft updated!'); window.location.href='/';</script>"
+            
+        elif action == 'approve':
+            CURRENT_DRAFT["status"] = "approve"
+            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Approved. You can close this tab.</h1>"
+            
+        elif action == 'reject':
+            CURRENT_DRAFT["status"] = "reject"
+            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected. You can close this tab.</h1>"
 
     html = """
     <html><head><style>
@@ -68,6 +79,7 @@ def dashboard():
         label { font-weight: bold; color: #aaa; margin-bottom: 5px; display: block; margin-top: 15px; }
         .flex { display: flex; gap: 20px; }
         .flex > div { flex: 1; }
+        .actions { text-align: center; margin-top: 30px; }
     </style></head><body>
         <h1>Draft Approval & Editor</h1>
         
@@ -92,13 +104,12 @@ def dashboard():
             <label>Editorial Text</label>
             <textarea name="editorial">{{ editorial }}</textarea>
             
-            <button type="submit" class="btn update">💾 Update Draft & Re-generate Image</button>
+            <div class="actions">
+                <button type="submit" name="action" value="update" class="btn update">💾 Update Draft & Re-generate Image</button>
+                <button type="submit" name="action" value="approve" class="btn approve">✅ Approve & Publish</button>
+                <button type="submit" name="action" value="reject" class="btn reject">❌ Reject</button>
+            </div>
         </form>
-
-        <div style="text-align: center; margin-top: 30px;">
-            <a href="/approve"><button class="btn approve">✅ Approve & Publish</button></a>
-            <a href="/reject"><button class="btn reject">❌ Reject</button></a>
-        </div>
     </body></html>
     """
     return render_template_string(html, 
@@ -196,7 +207,9 @@ Provide a byline (e.g., "By the Editorial Board").
 """
 
 def ai_write(article):
-    full_text = get_full_article(article["link"]) or article["summary"]
+    # Changed article["summary"] to article.get("summary", "")
+    full_text = get_full_article(article["link"]) or article.get("summary", "")
+    
     context_str = load_context()
     prompt = PROMPT_TEMPLATE.format(context=context_str, source=article["source"], title=article["title"], text=full_text[:3500])
     
@@ -209,7 +222,7 @@ def ai_write(article):
 # ---------- IMAGES ----------
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
     original_img = Image.open(source_img_path).convert("RGBA")
-    logo_path = ASSETS_DIR / "logo.png" # Use full logo for images as requested
+    logo_path = ASSETS_DIR / "logo.png"
     
     font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
     font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
@@ -217,46 +230,66 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     def add_overlays(base_img, is_social=False):
         draw = ImageDraw.Draw(base_img, 'RGBA')
         
-        # 1. Smoked Glass Credit
-        grad_height = 60
-        for y in range(grad_height):
-            alpha = int(180 * (y / grad_height))
-            draw.line([(0, base_img.height - grad_height + y), (base_img.width, base_img.height - grad_height + y)], fill=(0, 0, 0, alpha))
-        draw.text((20, base_img.height - 25), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
-
-        # 2. Full Logo (Top Right, Flush top, 20px margin)
+        # 1. Logo (Much larger box)
         if logo_path.exists():
             logo = Image.open(logo_path).convert("RGBA")
-            logo.thumbnail((160, 100)) # Increased size for full logo
-            box_size = 180
+            box_size = 150 if is_social else 200 # Huge logo on website
+            logo.thumbnail((box_size - 20, box_size - 20))
             box_x1 = base_img.width - box_size - 20
-            draw.rectangle([(box_x1, 0), (base_img.width - 20, 120)], fill=(255, 255, 255, 255))
-            base_img.paste(logo, (box_x1 + (box_size - logo.width)//2, (120 - logo.height)//2), logo)
+            box_y1 = 0
+            draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
+            paste_x = box_x1 + (box_size - logo.width) // 2
+            paste_y = box_y1 + (box_size - logo.height) // 2
+            base_img.paste(logo, (paste_x, paste_y), logo)
 
-        # 3. Geometric Headline (Only for Social)
+        # 2. Headline & Credit Overlay
         if is_social:
-            points = [(0, 450), (1200, 400), (1200, 630), (0, 630)]
-            draw.polygon(points, fill=(30, 95, 208, 240)) # Accent Blue
-
-            points_top = [(0, 430), (400, 430), (350, 470), (0, 470)]
-            draw.polygon(points_top, fill=(10, 10, 10, 255))
-            draw.text((20, 438), "PAHAYAGANG PALANYAG", font=font_small, fill=(255, 255, 255))
-
+            # Social: Fixed dimensions (1200x630)
+            draw.rectangle([(0, 450), (1200, 580)], fill=(30, 95, 208, 255)) # Solid Blue
+            draw.rectangle([(0, 430), (350, 470)], fill=(10, 10, 10, 255)) # Black Tag
+            draw.text((20, 440), "PAHAYAGANG PALANYAG", font=font_small, fill=(255, 255, 255))
+            
             words = headline.split()
             lines, current = [], ""
             for word in words:
-                if font_bold.getlength(f"{current} {word}".strip()) < 1050:
+                if font_bold.getlength(f"{current} {word}".strip()) < 1100:
                     current = f"{current} {word}".strip()
                 else:
                     lines.append(current); current = word
             if current: lines.append(current)
             
             y_text = 480
-            for line in lines[:3]:
+            for line in lines[:2]:
                 draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
                 y_text += 45
 
-    # Web Image (No crop)
+            # Credit line (Bottom 50px)
+            draw.rectangle([(0, 580), (1200, 630)], fill=(0, 0, 0, 200))
+            draw.text((20, 595), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
+            
+        else:
+            # Web: Dynamic dimensions based on original image
+            draw.rectangle([(0, base_img.height - 120), (base_img.width, base_img.height)], fill=(30, 95, 208, 255))
+            
+            words = headline.split()
+            lines, current = [], ""
+            for word in words:
+                if font_bold.getlength(f"{current} {word}".strip()) < base_img.width - 100:
+                    current = f"{current} {word}".strip()
+                else:
+                    lines.append(current); current = word
+            if current: lines.append(current)
+            
+            y_text = base_img.height - 100
+            for line in lines[:3]:
+                draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
+                y_text += 45
+                
+            # Credit line (Bottom 30px)
+            draw.rectangle([(0, base_img.height - 30), (base_img.width, base_img.height)], fill=(0, 0, 0, 200))
+            draw.text((20, base_img.height - 25), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
+
+    # Web Image (Natural size, no crop)
     web_img = original_img.copy()
     add_overlays(web_img, is_social=False)
     web_img.convert("RGB").save(web_out_path, quality=92)
@@ -306,8 +339,8 @@ def publish_to_website(article_data, image_filename):
     </header>
     <nav class="site-nav"><a href="../../index.html">Home</a></nav>
     <main class="container">
-        <div class="article-header">
-            <h1 class="article-title">{article_data['headline']}</h1>
+        <div class="article-header" style="margin-top: 20px; margin-bottom: 20px;">
+            <h1 style="display: none;">{article_data['headline']}</h1>
             <p class="byline">{article_data.get('byline', 'By Pahayagang Palanyag')} | {article_data.get('category', 'News')}</p>
         </div>
         <img src="{new_image_name}" class="hero-image-article">
@@ -428,6 +461,50 @@ def update_homepage():
 </body>
 </html>""")
 
+# ---------- APPROVAL ----------
+def send_for_approval(source_img, social_img, web_img, article_data):
+    CURRENT_DRAFT["data"] = article_data
+    CURRENT_DRAFT["source_img"] = source_img
+    CURRENT_DRAFT["social_img"] = social_img
+    CURRENT_DRAFT["web_img"] = web_img
+    CURRENT_DRAFT["status"] = "waiting"
+    
+    print("\n" + "="*50)
+    print(f"👉 BROWSER FALLBACK: http://localhost:5000")
+    print("="*50 + "\n")
+
+    keyboard = {"inline_keyboard": [
+        [{"text": "✅ Approve & Publish", "callback_data": "approve"}],
+        [{"text": "❌ Reject", "callback_data": "reject"}]
+    ]}
+    
+    with open(social_img, "rb") as f:
+        requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": f})
+    
+    full_text = f"📰 *HEADLINE:*\n{article_data['headline']}\n\n👤 *BYLINE:*\n{article_data.get('byline', 'Staff')}\n\n📝 *EDITORIAL:*\n{article_data['editorial']}"
+    requests.post(f"{TELEGRAM_API}/sendMessage", data={
+        "chat_id": TELEGRAM_CHAT_ID, "text": full_text[:4000],
+        "reply_markup": json.dumps(keyboard)
+    })
+
+    offset = None
+    while True:
+        # Check if approved/rejected via Browser
+        if CURRENT_DRAFT["status"] != "waiting":
+            return CURRENT_DRAFT["status"]
+            
+        # Check if approved/rejected via Telegram
+        try:
+            r = requests.get(f"{TELEGRAM_API}/getUpdates", params={"offset": offset}, timeout=5)
+            for update in r.json().get("result", []):
+                offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    ans = update["callback_query"]["data"]
+                    requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={"callback_query_id": update["callback_query"]["id"]})
+                    return ans
+        except Exception:
+            pass
+        time.sleep(2)
 # ---------- CYCLE ----------
 def full_cycle():
     generate_favicon()
@@ -472,21 +549,156 @@ def get_full_article(url):
         return "\n".join([p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 40])[:4000]
     except: return ""
 
-def download_image(url, path, headline):
+def download_image(article_url, save_path, headline):
+    print(f"[IMG] Attempting to scrape: {article_url}")
     try:
-        r = cffi_requests.get(url, impersonate="chrome120", timeout=15)
+        r = cffi_requests.get(article_url, impersonate="chrome120", timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
-        img = soup.find("meta", property="og:image")
-        if img and 'inquirer.net' not in img.get('content', '').lower():
-            img_data = cffi_requests.get(img['content'], impersonate="chrome120").content
-            with open(path, 'wb') as f: f.write(img_data)
-            return
-    except: pass
-    Image.new("RGB", (1200, 630), (20, 40, 80)).save(path)
+        
+        # 1. Try standard Meta Tags
+        img_url = None
+        for tag in [{"property": "og:image"}, {"name": "twitter:image"}, {"itemprop": "image"}]:
+            found = soup.find("meta", attrs=tag)
+            if found and found.get("content"):
+                img_url = found["content"]
+                break
+                
+        # 2. If no meta tag, look for large images in the body
+        if not img_url:
+            for img in soup.find_all('img'):
+                src = img.get('src') or img.get('data-src')
+                if src and ('upload' in src or 'image' in src) and 'logo' not in src.lower():
+                    img_url = src
+                    break
 
-def load_context(): return CONTEXT_FILE.read_text() if CONTEXT_FILE.exists() else ""
-def fetch_articles(x): return [{"title": "Test", "link": "https://newsinfo.inquirer.net/2338734/whats-the-status-of-your-agencys-2024-pbb-processing", "source": "Inquirer"}]
-def adsense_head(): return ""
+        if img_url:
+            img_url = urljoin(article_url, img_url)
+            img_resp = cffi_requests.get(img_url, impersonate="chrome120", timeout=15)
+            if 'image' in img_resp.headers.get('Content-Type', '').lower():
+                with open(save_path, 'wb') as f:
+                    f.write(img_resp.content)
+                print(f"[IMG] ✅ Successfully downloaded image.")
+                return True
+    except Exception as e:
+        print(f"[IMG] ❌ Scrape failed: {e}")
+
+    print("[IMG] 🎨 Generating fallback gradient image...")
+    img = Image.new("RGB", (1200, 630), (10, 25, 50))
+    draw = ImageDraw.Draw(img)
+    for y in range(630):
+        r = int(10 + (30 - 10) * (y / 630))
+        g = int(25 + (70 - 25) * (y / 630))
+        b = int(50 + (150 - 50) * (y / 630))
+        draw.line([(0, y), (1200, y)], fill=(r, g, b))
+    img.save(save_path)
+    return True
+
+def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
+    original_img = Image.open(source_img_path).convert("RGBA")
+    logo_path = ASSETS_DIR / "logo.png"
+    
+    font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+    font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+
+    def add_overlays(base_img, is_social=False):
+        draw = ImageDraw.Draw(base_img, 'RGBA')
+        
+        # 1. Smoked Glass Credit
+        grad_height = 60
+        for y in range(grad_height):
+            alpha = int(180 * (y / grad_height))
+            draw.line([(0, base_img.height - grad_height + y), (base_img.width, base_img.height - grad_height + y)], fill=(0, 0, 0, alpha))
+        draw.text((20, base_img.height - 25), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
+
+        # 2. Perfect Square Logo (Top Right, Flush top, 20px margin)
+        if logo_path.exists():
+            logo = Image.open(logo_path).convert("RGBA")
+            logo.thumbnail((80, 80))
+            box_size = 100
+            box_x1 = base_img.width - box_size - 20
+            box_y1 = 0
+            draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
+            paste_x = box_x1 + (box_size - logo.width) // 2
+            paste_y = box_y1 + (box_size - logo.height) // 2
+            base_img.paste(logo, (paste_x, paste_y), logo)
+
+        # 3. Straight Lower Third (Only for Social)
+        if is_social:
+            # Solid blue rectangle
+            draw.rectangle([(0, 450), (1200, 630)], fill=(30, 95, 208, 255)) # Solid Blue
+            
+            # Straight black tag for branding
+            draw.rectangle([(0, 430), (350, 470)], fill=(10, 10, 10, 255))
+            draw.text((20, 440), "PAHAYAGANG PALANYAG", font=font_small, fill=(255, 255, 255))
+
+            # Text wrapping
+            words = headline.split()
+            lines, current = [], ""
+            for word in words:
+                if font_bold.getlength(f"{current} {word}".strip()) < 1050:
+                    current = f"{current} {word}".strip()
+                else:
+                    lines.append(current); current = word
+            if current: lines.append(current)
+            
+            y_text = 480
+            for line in lines[:3]:
+                draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
+                y_text += 45
+
+    web_img = original_img.copy()
+    add_overlays(web_img, is_social=False)
+    web_img.convert("RGB").save(web_out_path, quality=92)
+
+    social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
+    add_overlays(social_img, is_social=True)
+    social_img.convert("RGB").save(social_out_path, quality=92)
+
+def load_context(): 
+    return CONTEXT_FILE.read_text() if CONTEXT_FILE.exists() else ""
+
+def adsense_head(): 
+    return ""
+
+# --- REAL RSS FETCHER ---
+DEFAULT_SOURCES = {
+    "tier_1_gov": ["https://www.paranaquecity.gov.ph/feed/", "https://pna.gov.ph/feed"],
+    "tier_2_news": [
+        "https://www.inquirer.net/fullfeed",
+        "https://www.philstar.com/rss/nation",
+        "https://www.rappler.com/feed/",
+        "https://news.abs-cbn.com/feed/rss",
+        "https://www.gmanetwork.com/news/rss/nation/",
+        "https://mb.com.ph/feed/",
+        "https://www.manilatimes.net/feed/",
+        "https://businessmirror.com.ph/feed/"
+    ]
+}
+
+def load_sources():
+    if SOURCES_FILE.exists():
+        return json.loads(SOURCES_FILE.read_text())
+    else:
+        SOURCES_FILE.write_text(json.dumps(DEFAULT_SOURCES, indent=2))
+        return DEFAULT_SOURCES
+
+def fetch_articles(limit_per_tier=2):
+    articles = []
+    sources = load_sources()
+    for tier, urls in sources.items():
+        if tier == "tier_3_social": continue
+        for url in urls:
+            try:
+                feed = feedparser.parse(url)
+                for entry in feed.entries[:limit_per_tier]:
+                    articles.append({
+                        "title": entry.title, "link": entry.link,
+                        "summary": entry.get("summary", ""),
+                        "source": feed.feed.get("title", url), "tier": tier
+                    })
+            except: pass
+    articles.sort(key=lambda x: x["tier"])
+    return articles
 
 if __name__ == "__main__":
     print("Engine running. Browser fallback at http://localhost:5000")
