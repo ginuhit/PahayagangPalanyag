@@ -135,6 +135,81 @@ def reject():
     CURRENT_DRAFT["status"] = "reject"
     return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected. You can close this tab.</h1>"
 
+@app.route('/write', methods=['GET', 'POST'])
+def write_custom():
+    if request.method == 'POST':
+        headline = request.form.get('headline', 'Untitled')
+        byline = request.form.get('byline', 'By the Editorial Board')
+        category = request.form.get('category', 'Opinion')
+        editorial = request.form.get('editorial', '')
+        
+        # Handle Image Upload
+        file = request.files.get('image')
+        source_img_path = ASSETS_DIR / "custom_upload.jpg"
+        if file and file.filename != '':
+            file.save(source_img_path)
+        else:
+            # Fallback if no image
+            Image.new("RGB", (1200, 630), (20, 40, 80)).save(source_img_path)
+            
+        article_data = {
+            "headline": headline,
+            "byline": byline,
+            "category": category,
+            "editorial": editorial,
+            "social_caption": f"{headline}\n\nRead more on Pahayagang Palanyag.",
+            "image_credit": "Custom Upload"
+        }
+        
+        social_img = DRAFTS_DIR / "draft_social.jpg"
+        web_img = DRAFTS_DIR / "draft_web.jpg"
+        compose_image(source_img_path, headline, "Custom Upload", social_img, web_img)
+        
+        # Publish
+        publish_to_website(article_data, "draft_web.jpg")
+        update_homepage()
+        
+        # Push to GitHub
+        os.chdir(WEBSITE_DIR)
+        os.system("git add . && git commit -m 'Custom Article' && git push")
+        os.chdir(BASE_DIR)
+        
+        return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Custom Article Published!</h1>"
+
+    html = """
+    <html><head><style>
+        body { font-family: sans-serif; background: #111; color: #eee; max-width: 800px; margin: auto; padding: 40px; }
+        h1 { font-family: serif; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .btn { padding: 15px 30px; font-size: 18px; margin-top: 20px; border: none; border-radius: 5px; cursor: pointer; color: white; background: #2e7d32; width: 100%;}
+        input[type="text"], input[type="file"], textarea { width: 100%; padding: 12px; margin-bottom: 15px; background: #222; color: white; border: 1px solid #444; border-radius: 5px; font-size: 16px; }
+        textarea { height: 300px; }
+        label { font-weight: bold; color: #aaa; margin-bottom: 5px; display: block; margin-top: 15px; }
+    </style></head><body>
+        <h1>Write Custom Article</h1>
+        <a href="/" style="color:#1e5fd0; text-decoration:none;">&larr; Back to Dashboard</a>
+        
+        <form method="POST" enctype="multipart/form-data">
+            <label>Headline</label>
+            <input type="text" name="headline" required>
+            
+            <label>Byline</label>
+            <input type="text" name="byline" value="By the Editorial Board">
+            
+            <label>Category</label>
+            <input type="text" name="category" value="Opinion">
+            
+            <label>Cover Image</label>
+            <input type="file" name="image" accept="image/*">
+            
+            <label>Editorial Text</label>
+            <textarea name="editorial" required></textarea>
+            
+            <button type="submit" class="btn">🚀 Publish Custom Article</button>
+        </form>
+    </body></html>
+    """
+    return render_template_string(html)
+
 def run_server():
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
@@ -207,19 +282,17 @@ Provide a byline (e.g., "By the Editorial Board").
 """
 
 def ai_write(article):
-    # Changed article["summary"] to article.get("summary", "")
     full_text = get_full_article(article["link"]) or article.get("summary", "")
-    
     context_str = load_context()
     prompt = PROMPT_TEMPLATE.format(context=context_str, source=article["source"], title=article["title"], text=full_text[:3500])
     
     resp = ollama.chat(
         model=MODEL_NAME, messages=[{"role": "user", "content": prompt}],
-        format=SCHEMA, options={"temperature": 0.6, "num_predict": 4096, "num_ctx": 8192}
+        format=SCHEMA, 
+        options={"temperature": 0.6, "num_predict": 8192, "num_ctx": 8192} # Increased token limit
     )
     return json.loads(resp["message"]["content"])
 
-# ---------- IMAGES ----------
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
     original_img = Image.open(source_img_path).convert("RGBA")
     logo_path = ASSETS_DIR / "logo.png"
@@ -230,46 +303,28 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     def add_overlays(base_img, is_social=False):
         draw = ImageDraw.Draw(base_img, 'RGBA')
         
-        # 1. Logo (Much larger box)
+        # 1. MASSIVE Logo Box (Top Right)
         if logo_path.exists():
             logo = Image.open(logo_path).convert("RGBA")
-            box_size = 150 if is_social else 200 # Huge logo on website
-            logo.thumbnail((box_size - 20, box_size - 20))
+            box_size = 300 # Huge logo
+            logo.thumbnail((box_size - 30, box_size - 30))
             box_x1 = base_img.width - box_size - 20
             box_y1 = 0
             draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
-            paste_x = box_x1 + (box_size - logo.width) // 2
-            paste_y = box_y1 + (box_size - logo.height) // 2
-            base_img.paste(logo, (paste_x, paste_y), logo)
+            base_img.paste(logo, (box_x1 + (box_size - logo.width)//2, box_y1 + (box_size - logo.height)//2), logo)
 
-        # 2. Headline & Credit Overlay
+        # 2. Credit Line
+        draw.rectangle([(0, base_img.height - 40), (base_img.width, base_img.height)], fill=(0, 0, 0, 200))
+        draw.text((20, base_img.height - 30), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
+
+        # 3. Lower Third (ONLY for Facebook)
         if is_social:
-            # Social: Fixed dimensions (1200x630)
-            draw.rectangle([(0, 450), (1200, 580)], fill=(30, 95, 208, 255)) # Solid Blue
-            draw.rectangle([(0, 430), (350, 470)], fill=(10, 10, 10, 255)) # Black Tag
-            draw.text((20, 440), "PAHAYAGANG PALANYAG", font=font_small, fill=(255, 255, 255))
+            box_height = 180
+            box_y_start = base_img.height - box_height
             
-            words = headline.split()
-            lines, current = [], ""
-            for word in words:
-                if font_bold.getlength(f"{current} {word}".strip()) < 1100:
-                    current = f"{current} {word}".strip()
-                else:
-                    lines.append(current); current = word
-            if current: lines.append(current)
-            
-            y_text = 480
-            for line in lines[:2]:
-                draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
-                y_text += 45
-
-            # Credit line (Bottom 50px)
-            draw.rectangle([(0, 580), (1200, 630)], fill=(0, 0, 0, 200))
-            draw.text((20, 595), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
-            
-        else:
-            # Web: Dynamic dimensions based on original image
-            draw.rectangle([(0, base_img.height - 120), (base_img.width, base_img.height)], fill=(30, 95, 208, 255))
+            draw.rectangle([(0, box_y_start), (base_img.width, base_img.height - 40)], fill=(30, 95, 208, 255))
+            draw.rectangle([(0, box_y_start - 30), (350, box_y_start + 10)], fill=(10, 10, 10, 255))
+            draw.text((20, box_y_start - 20), "PAHAYAGANG PALANYAG", font=font_small, fill=(255, 255, 255))
             
             words = headline.split()
             lines, current = [], ""
@@ -280,21 +335,15 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
                     lines.append(current); current = word
             if current: lines.append(current)
             
-            y_text = base_img.height - 100
+            y_text = box_y_start + 20
             for line in lines[:3]:
                 draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
                 y_text += 45
-                
-            # Credit line (Bottom 30px)
-            draw.rectangle([(0, base_img.height - 30), (base_img.width, base_img.height)], fill=(0, 0, 0, 200))
-            draw.text((20, base_img.height - 25), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
 
-    # Web Image (Natural size, no crop)
     web_img = original_img.copy()
     add_overlays(web_img, is_social=False)
     web_img.convert("RGB").save(web_out_path, quality=92)
 
-    # Social Image (Cropped 1200x630)
     social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
     add_overlays(social_img, is_social=True)
     social_img.convert("RGB").save(social_out_path, quality=92)
@@ -318,7 +367,11 @@ def publish_to_website(article_data, image_filename):
     new_image_name = f"{art_slug}.jpg"
     paragraphs = ''.join(f'<p>{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
     
-    # Use PPICON and PPTITLE in the header
+    # Force a decent byline if the AI or you entered something too short
+    byline_text = article_data.get('byline', '').strip()
+    if len(byline_text) < 3:
+        byline_text = "By the Editorial Board"
+    
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -339,9 +392,9 @@ def publish_to_website(article_data, image_filename):
     </header>
     <nav class="site-nav"><a href="../../index.html">Home</a></nav>
     <main class="container">
-        <div class="article-header" style="margin-top: 20px; margin-bottom: 20px;">
-            <h1 style="display: none;">{article_data['headline']}</h1>
-            <p class="byline">{article_data.get('byline', 'By Pahayagang Palanyag')} | {article_data.get('category', 'News')}</p>
+        <div class="article-header">
+            <h1 class="article-title">{article_data['headline']}</h1>
+            <p class="byline">{byline_text} | {article_data.get('category', 'News')}</p>
         </div>
         <img src="{new_image_name}" class="hero-image-article">
         <div class="article-content">{paragraphs}</div>
@@ -351,7 +404,6 @@ def publish_to_website(article_data, image_filename):
     (cat_dir / f"{art_slug}.html").write_text(html)
     shutil.copy(DRAFTS_DIR / image_filename, cat_dir / new_image_name)
     
-    # Copy assets to root so relative paths work
     if (ASSETS_DIR / "PPICON.png").exists(): shutil.copy(ASSETS_DIR / "PPICON.png", WEBSITE_DIR / "PPICON.png")
     if (ASSETS_DIR / "PPTITLE.png").exists(): shutil.copy(ASSETS_DIR / "PPTITLE.png", WEBSITE_DIR / "PPTITLE.png")
 
