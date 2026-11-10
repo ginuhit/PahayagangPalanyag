@@ -1,5 +1,6 @@
 # engine.py
 import os, json, re, time, datetime, hashlib, shutil, random, threading
+publish_lock = threading.Lock()
 from pathlib import Path
 from urllib.parse import urljoin, quote
 from bs4 import BeautifulSoup
@@ -33,25 +34,35 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 # ---------- BROWSER FALLBACK & HUMAN EDITOR ----------
 app = Flask(__name__)
-CURRENT_DRAFT = {"data": None, "social_img": None, "web_img": None, "source_img": None, "status": "waiting"}
+CURRENT_DRAFT = {"data": None, "social_img": None, "web_img": None, "source_img": None, "status": "waiting", "publishing": False}
 
 def do_publish(article_data, web_img_path, social_img_path):
-    """Background task to publish to FB, Web, and Git."""
-    slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
-    cat_slug = re.sub(r"[^a-z0-9]+", "-", article_data.get("category", "News").lower()).strip("-")
-    article_url = f"https://pahayagangpalanyag.pages.dev/articles/{cat_slug}/{slug}.html"
-    
-    print("[PUBLISH] Posting to Facebook...")
-    publish_to_facebook(social_img_path, f"{article_data.get('social_caption', '')}\n\nRead here: {article_url}")
-    
-    print("[PUBLISH] Writing to Website...")
-    publish_to_website(article_data, web_img_path.name)
-    update_homepage()
-    
-    os.chdir(WEBSITE_DIR)
-    os.system("git add . && git commit -m 'New Post' && git push")
-    os.chdir(BASE_DIR)
-    print("[PUBLISH] Done. Live.")
+    # This lock prevents multiple clicks from triggering multiple posts
+    with publish_lock:
+        # If the status is already published, abort immediately
+        if CURRENT_DRAFT.get("status") == "published":
+            return
+            
+        try:
+            slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
+            cat_slug = re.sub(r"[^a-z0-9]+", "-", article_data.get("category", "News").lower()).strip("-")
+            article_url = f"https://pahayagangpalanyag.pages.dev/articles/{cat_slug}/{slug}.html"
+            
+            print("[PUBLISH] Posting to Facebook...")
+            publish_to_facebook(social_img_path, f"{article_data.get('social_caption', '')}\n\nRead here: {article_url}")
+            
+            print("[PUBLISH] Writing to Website...")
+            publish_to_website(article_data, web_img_path.name)
+            update_homepage()
+            
+            os.chdir(WEBSITE_DIR)
+            os.system("git add . && git commit -m 'New Post' && git push")
+            os.chdir(BASE_DIR)
+            print("[PUBLISH] Done. Live.")
+        except Exception as e:
+            print(f"[PUBLISH] Error: {e}")
+        finally:
+            CURRENT_DRAFT["status"] = "published"
 
 @app.route('/', methods=['GET', 'POST'])
 def dashboard():
@@ -81,18 +92,17 @@ def dashboard():
             return "<script>alert('Draft updated!'); window.location.href='/';</script>"
             
         elif action == 'approve':
+            if CURRENT_DRAFT["status"] in ["approve", "published"]:
+                return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Already approved. Check your terminal for publishing progress.</h1>"
+            
             CURRENT_DRAFT["status"] = "approve"
+            
             threading.Thread(target=do_publish, args=(
                 CURRENT_DRAFT["data"], 
                 Path(CURRENT_DRAFT["web_img"]), 
                 Path(CURRENT_DRAFT["social_img"])
             )).start()
             return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Approved! Publishing in the background. You can close this tab.</h1>"
-            
-        elif action == 'reject':
-            CURRENT_DRAFT["status"] = "reject"
-            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected.</h1>"
-
     html = """
     <html><head><style>
         body { font-family: sans-serif; background: #111; color: #eee; max-width: 1000px; margin: auto; padding: 20px; }
@@ -267,6 +277,7 @@ def full_cycle():
     CURRENT_DRAFT["social_img"] = social_img
     CURRENT_DRAFT["web_img"] = web_img
     CURRENT_DRAFT["status"] = "waiting"
+    CURRENT_DRAFT["publishing"] = False # Reset the lock for the new draft
     
     print("\n" + "="*50)
     print(f"👉 AI DRAFT READY: http://localhost:5000")
@@ -487,6 +498,10 @@ def publish_to_website(article_data, image_filename):
     if (ASSETS_DIR / "PPTITLE.png").exists(): shutil.copy(ASSETS_DIR / "PPTITLE.png", WEBSITE_DIR / "PPTITLE.png")
 
 def update_homepage():
+        # FORCE SYNC ASSETS TO WEBSITE FOLDER
+    if (ASSETS_DIR / "PPICON.png").exists(): shutil.copy(ASSETS_DIR / "PPICON.png", WEBSITE_DIR / "PPICON.png")
+    if (ASSETS_DIR / "PPTITLE.png").exists(): shutil.copy(ASSETS_DIR / "PPTITLE.png", WEBSITE_DIR / "PPTITLE.png")
+    if (ASSETS_DIR / "logo.png").exists(): shutil.copy(ASSETS_DIR / "logo.png", WEBSITE_DIR / "logo.png")
     items = [p for p in ARTICLES_DIR.rglob("*.html") if p.name != "index.html"]
     items = sorted(items, key=os.path.getmtime, reverse=True)
     if not items: return
