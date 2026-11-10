@@ -71,5 +71,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); line
 .article-title { font-family: var(--serif); font-size: 3.5rem; line-height: 1.1; margin-bottom: 15px; }
 .byline { font-size: 0.85rem; color: #666; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
 .hero-image-article { width: 100%; height: auto; max-height: 700px; object-fit: contain; margin-bottom: 40px; }
-.article-content { max-width: 720px; margin: 0 auto 80px; font-size: 1.25rem; line-height: 1.8; color: #333; font-family: var(--serif); }
+.article-content { 
+    max-width: 720px; 
+    margin: 0 auto 80px; 
+    font-size: 1.15rem; /* Slightly adjusted for sans-serif */
+    line-height: 1.8; 
+    color: #222; /* Darker grey for better contrast */
+    font-family: var(--sans); /* THIS IS THE FIX: Changes it to Inter */
+}
 .article-content p { margin-bottom: 25px; }

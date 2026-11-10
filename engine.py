@@ -31,14 +31,37 @@ for d in (WEBSITE_DIR, ARTICLES_DIR, DRAFTS_DIR, ASSETS_DIR):
 MODEL_NAME   = "gemma4:12b"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# ---------- EDITABLE BROWSER FALLBACK ----------
+# ---------- BROWSER FALLBACK & HUMAN EDITOR ----------
 app = Flask(__name__)
 CURRENT_DRAFT = {"data": None, "social_img": None, "web_img": None, "source_img": None, "status": "waiting"}
+
+def do_publish(article_data, web_img_path, social_img_path):
+    """Background task to publish to FB, Web, and Git."""
+    slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
+    cat_slug = re.sub(r"[^a-z0-9]+", "-", article_data.get("category", "News").lower()).strip("-")
+    article_url = f"https://pahayagangpalanyag.pages.dev/articles/{cat_slug}/{slug}.html"
+    
+    print("[PUBLISH] Posting to Facebook...")
+    publish_to_facebook(social_img_path, f"{article_data.get('social_caption', '')}\n\nRead here: {article_url}")
+    
+    print("[PUBLISH] Writing to Website...")
+    publish_to_website(article_data, web_img_path.name)
+    update_homepage()
+    
+    os.chdir(WEBSITE_DIR)
+    os.system("git add . && git commit -m 'New Post' && git push")
+    os.chdir(BASE_DIR)
+    print("[PUBLISH] Done. Live.")
 
 @app.route('/', methods=['GET', 'POST'])
 def dashboard():
     if not CURRENT_DRAFT["data"]:
-        return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>No pending drafts. The engine is running...</h1>"
+        return """
+        <div style='font-family:sans-serif; background:#111; color:#eee; height:100vh; padding:50px; text-align:center;'>
+            <h1>No pending drafts.</h1>
+            <p>The AI engine is running...</p>
+            <a href="/write" style="color:#1e5fd0; font-size:20px; text-decoration:none;">✍️ Write a Custom Article</a>
+        </div>"""
     
     if request.method == 'POST':
         action = request.form.get('action')
@@ -59,11 +82,16 @@ def dashboard():
             
         elif action == 'approve':
             CURRENT_DRAFT["status"] = "approve"
-            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Approved. You can close this tab.</h1>"
+            threading.Thread(target=do_publish, args=(
+                CURRENT_DRAFT["data"], 
+                Path(CURRENT_DRAFT["web_img"]), 
+                Path(CURRENT_DRAFT["social_img"])
+            )).start()
+            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Approved! Publishing in the background. You can close this tab.</h1>"
             
         elif action == 'reject':
             CURRENT_DRAFT["status"] = "reject"
-            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected. You can close this tab.</h1>"
+            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected.</h1>"
 
     html = """
     <html><head><style>
@@ -80,8 +108,12 @@ def dashboard():
         .flex { display: flex; gap: 20px; }
         .flex > div { flex: 1; }
         .actions { text-align: center; margin-top: 30px; }
+        .top-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
     </style></head><body>
-        <h1>Draft Approval & Editor</h1>
+        <div class="top-nav">
+            <h1>Editor Dashboard</h1>
+            <a href="/write" style="color:#1e5fd0; text-decoration:none; font-weight:bold;">✍️ Write Custom Article</a>
+        </div>
         
         <div class="flex">
             <div>
@@ -105,7 +137,7 @@ def dashboard():
             <textarea name="editorial">{{ editorial }}</textarea>
             
             <div class="actions">
-                <button type="submit" name="action" value="update" class="btn update">💾 Update Draft & Re-generate Image</button>
+                <button type="submit" name="action" value="update" class="btn update">💾 Update Draft</button>
                 <button type="submit" name="action" value="approve" class="btn approve">✅ Approve & Publish</button>
                 <button type="submit" name="action" value="reject" class="btn reject">❌ Reject</button>
             </div>
@@ -117,24 +149,6 @@ def dashboard():
         byline=CURRENT_DRAFT["data"].get("byline", "Staff Writer"),
         editorial=CURRENT_DRAFT["data"]["editorial"])
 
-@app.route('/social_image')
-def serve_social():
-    return open(CURRENT_DRAFT["social_img"], "rb").read()
-
-@app.route('/web_image')
-def serve_web():
-    return open(CURRENT_DRAFT["web_img"], "rb").read()
-
-@app.route('/approve')
-def approve():
-    CURRENT_DRAFT["status"] = "approve"
-    return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Approved. You can close this tab.</h1>"
-
-@app.route('/reject')
-def reject():
-    CURRENT_DRAFT["status"] = "reject"
-    return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected. You can close this tab.</h1>"
-
 @app.route('/write', methods=['GET', 'POST'])
 def write_custom():
     if request.method == 'POST':
@@ -142,46 +156,42 @@ def write_custom():
         byline = request.form.get('byline', 'By the Editorial Board')
         category = request.form.get('category', 'Opinion')
         editorial = request.form.get('editorial', '')
+        image_credit = request.form.get('image_credit', 'Custom Upload')
         
-        # Handle Image Upload
+        # Save uploaded image
         file = request.files.get('image')
         source_img_path = ASSETS_DIR / "custom_upload.jpg"
         if file and file.filename != '':
             file.save(source_img_path)
         else:
-            # Fallback if no image
             Image.new("RGB", (1200, 630), (20, 40, 80)).save(source_img_path)
-            
-        article_data = {
+
+        # Compose Images using the exact same template
+        social_img = DRAFTS_DIR / "draft_social.jpg"
+        web_img = DRAFTS_DIR / "draft_web.jpg"
+        compose_image(source_img_path, headline, image_credit, social_img, web_img)
+
+        # Load into the Dashboard for approval
+        CURRENT_DRAFT["data"] = {
             "headline": headline,
             "byline": byline,
             "category": category,
             "editorial": editorial,
             "social_caption": f"{headline}\n\nRead more on Pahayagang Palanyag.",
-            "image_credit": "Custom Upload"
+            "image_credit": image_credit
         }
+        CURRENT_DRAFT["source_img"] = source_img_path
+        CURRENT_DRAFT["social_img"] = social_img
+        CURRENT_DRAFT["web_img"] = web_img
         
-        social_img = DRAFTS_DIR / "draft_social.jpg"
-        web_img = DRAFTS_DIR / "draft_web.jpg"
-        compose_image(source_img_path, headline, "Custom Upload", social_img, web_img)
-        
-        # Publish
-        publish_to_website(article_data, "draft_web.jpg")
-        update_homepage()
-        
-        # Push to GitHub
-        os.chdir(WEBSITE_DIR)
-        os.system("git add . && git commit -m 'Custom Article' && git push")
-        os.chdir(BASE_DIR)
-        
-        return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Custom Article Published!</h1>"
+        return "<script>alert('Draft loaded! Please review.'); window.location.href='/';</script>"
 
     html = """
     <html><head><style>
         body { font-family: sans-serif; background: #111; color: #eee; max-width: 800px; margin: auto; padding: 40px; }
         h1 { font-family: serif; border-bottom: 2px solid #333; padding-bottom: 10px; }
-        .btn { padding: 15px 30px; font-size: 18px; margin-top: 20px; border: none; border-radius: 5px; cursor: pointer; color: white; background: #2e7d32; width: 100%;}
-        input[type="text"], input[type="file"], textarea { width: 100%; padding: 12px; margin-bottom: 15px; background: #222; color: white; border: 1px solid #444; border-radius: 5px; font-size: 16px; }
+        .btn { padding: 15px 30px; font-size: 18px; margin-top: 20px; border: none; border-radius: 5px; cursor: pointer; color: white; background: #1e5fd0; width: 100%; font-weight:bold;}
+        input[type="text"], input[type="file"], textarea, select { width: 100%; padding: 12px; margin-bottom: 15px; background: #222; color: white; border: 1px solid #444; border-radius: 5px; font-size: 16px; }
         textarea { height: 300px; }
         label { font-weight: bold; color: #aaa; margin-bottom: 5px; display: block; margin-top: 15px; }
     </style></head><body>
@@ -196,22 +206,75 @@ def write_custom():
             <input type="text" name="byline" value="By the Editorial Board">
             
             <label>Category</label>
-            <input type="text" name="category" value="Opinion">
+            <select name="category">
+                <option value="News">News</option>
+                <option value="Politics">Politics</option>
+                <option value="Metro Manila">Metro Manila</option>
+                <option value="Opinion">Opinion</option>
+                <option value="Sports">Sports</option>
+                <option value="Business">Business</option>
+                <option value="Technology">Technology</option>
+                <option value="Entertainment">Entertainment</option>
+            </select>
+
+            <label>Image Credit (e.g., "Photo by Juan Dela Cruz")</label>
+            <input type="text" name="image_credit" value="Pahayagang Palanyag">
             
-            <label>Cover Image</label>
-            <input type="file" name="image" accept="image/*">
+            <label>Upload Cover Image</label>
+            <input type="file" name="image" accept="image/*" required>
             
             <label>Editorial Text</label>
             <textarea name="editorial" required></textarea>
             
-            <button type="submit" class="btn">🚀 Publish Custom Article</button>
+            <button type="submit" class="btn">Generate Draft</button>
         </form>
     </body></html>
     """
     return render_template_string(html)
 
+@app.route('/social_image')
+def serve_social():
+    return open(CURRENT_DRAFT["social_img"], "rb").read()
+
+@app.route('/web_image')
+def serve_web():
+    return open(CURRENT_DRAFT["web_img"], "rb").read()
+
 def run_server():
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+# ---------- MAIN CYCLE (AI) ----------
+def full_cycle():
+    generate_favicon()
+    articles = fetch_articles(2)
+    if not articles: return
+    art = articles[0]
+    
+    try: data = ai_write(art)
+    except Exception as e:
+        print(f"[AI] failed: {e}"); return
+
+    source_img = ASSETS_DIR / "source_image.jpg"
+    download_image(art["link"], source_img, data["headline"])
+    
+    social_img = DRAFTS_DIR / "draft_social.jpg"
+    web_img = DRAFTS_DIR / "draft_web.jpg"
+    compose_image(source_img, data["headline"], data["image_credit"], social_img, web_img)
+
+    # Load into Dashboard
+    CURRENT_DRAFT["data"] = data
+    CURRENT_DRAFT["source_img"] = source_img
+    CURRENT_DRAFT["social_img"] = social_img
+    CURRENT_DRAFT["web_img"] = web_img
+    CURRENT_DRAFT["status"] = "waiting"
+    
+    print("\n" + "="*50)
+    print(f"👉 AI DRAFT READY: http://localhost:5000")
+    print("="*50 + "\n")
+    
+    # Wait for human approval in the browser
+    while CURRENT_DRAFT["status"] == "waiting":
+        time.sleep(2)
 
 # ---------- FAVICON GENERATOR ----------
 def generate_favicon():
@@ -631,36 +694,67 @@ def get_full_article(url):
 def download_image(article_url, save_path, headline):
     print(f"[IMG] Attempting to scrape: {article_url}")
     try:
+        # Use curl_cffi for the main page
         r = cffi_requests.get(article_url, impersonate="chrome120", timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # 1. Try standard Meta Tags
         img_url = None
+        
+        # 1. Check standard Meta Tags
         for tag in [{"property": "og:image"}, {"name": "twitter:image"}, {"itemprop": "image"}]:
             found = soup.find("meta", attrs=tag)
             if found and found.get("content"):
                 img_url = found["content"]
                 break
                 
-        # 2. If no meta tag, look for large images in the body
+        # 2. Check for modern srcset
         if not img_url:
             for img in soup.find_all('img'):
-                src = img.get('src') or img.get('data-src')
+                if img.get('srcset'):
+                    # Grab the highest resolution from srcset
+                    srcset = img['srcset'].split(',')
+                    highest_res = srcset[-1].strip().split(' ')[0]
+                    if highest_res.startswith('http'):
+                        img_url = highest_res
+                        break
+
+        # 3. Fallback to standard src/data-src
+        if not img_url:
+            for img in soup.find_all('img'):
+                src = img.get('data-src') or img.get('src')
                 if src and ('upload' in src or 'image' in src) and 'logo' not in src.lower():
                     img_url = src
                     break
 
         if img_url:
-            img_url = urljoin(article_url, img_url)
-            img_resp = cffi_requests.get(img_url, impersonate="chrome120", timeout=15)
+            # Handle protocol-relative URLs (e.g., //cdn.inquirer.net/...)
+            if img_url.startswith('//'):
+                img_url = 'https:' + img_url
+            else:
+                img_url = urljoin(article_url, img_url)
+                
+            print(f"[IMG] Found image URL: {img_url[:80]}")
+            
+            # CRITICAL FIX: Pass the article_url as the Referer to bypass hotlink protection
+            headers = {
+                'Referer': article_url,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            
+            img_resp = cffi_requests.get(img_url, headers=headers, impersonate="chrome120", timeout=15)
+            
             if 'image' in img_resp.headers.get('Content-Type', '').lower():
                 with open(save_path, 'wb') as f:
                     f.write(img_resp.content)
                 print(f"[IMG] ✅ Successfully downloaded image.")
                 return True
+            else:
+                print(f"[IMG] ❌ Server returned Content-Type: {img_resp.headers.get('Content-Type')}")
+                
     except Exception as e:
         print(f"[IMG] ❌ Scrape failed: {e}")
 
+    # FALLBACK: Generate the dark blue gradient
     print("[IMG] 🎨 Generating fallback gradient image...")
     img = Image.new("RGB", (1200, 630), (10, 25, 50))
     draw = ImageDraw.Draw(img)
