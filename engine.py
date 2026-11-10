@@ -1,6 +1,5 @@
 # engine.py
-import os, json, re, time, datetime, hashlib, shutil, random, threading
-publish_lock = threading.Lock()
+import os, json, re, time, datetime, hashlib, shutil, random, threading, subprocess, sys
 from pathlib import Path
 from urllib.parse import urljoin, quote
 from bs4 import BeautifulSoup
@@ -32,47 +31,54 @@ for d in (WEBSITE_DIR, ARTICLES_DIR, DRAFTS_DIR, ASSETS_DIR):
 MODEL_NAME   = "gemma4:12b"
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# ---------- BROWSER FALLBACK & HUMAN EDITOR ----------
-app = Flask(__name__)
-CURRENT_DRAFT = {"data": None, "social_img": None, "web_img": None, "source_img": None, "status": "waiting", "publishing": False}
+# ---------- GLOBAL STATE & LOCKS ----------
+publish_lock = threading.Lock()
+CURRENT_DRAFT = {"data": None, "social_img": None, "web_img": None, "source_img": None, "status": "idle"}
 
-def do_publish(article_data, web_img_path, social_img_path):
-    # This lock prevents multiple clicks from triggering multiple posts
+# ---------- UNIFIED PUBLISHING (Fixes Issue 1 & 4) ----------
+def publish_article(article_data, web_img_path, social_img_path):
     with publish_lock:
-        # If the status is already published, abort immediately
         if CURRENT_DRAFT.get("status") == "published":
             return
-            
+        
+        print("\n[PUBLISH] Lock acquired. Starting publish sequence...")
         try:
-            slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
+            # 1. Publish to Facebook
             cat_slug = re.sub(r"[^a-z0-9]+", "-", article_data.get("category", "News").lower()).strip("-")
+            slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
             article_url = f"https://pahayagangpalanyag.pages.dev/articles/{cat_slug}/{slug}.html"
             
-            print("[PUBLISH] Posting to Facebook...")
+            print("[PUBLISH] Sending to Facebook...")
             publish_to_facebook(social_img_path, f"{article_data.get('social_caption', '')}\n\nRead here: {article_url}")
             
+            # 2. Publish to Website
             print("[PUBLISH] Writing to Website...")
-            publish_to_website(article_data, web_img_path.name)
+            publish_to_website(article_data, Path(web_img_path).name)
             update_homepage()
             
-            os.chdir(WEBSITE_DIR)
-            os.system("git add . && git commit -m 'New Post' && git push")
-            os.chdir(BASE_DIR)
-            print("[PUBLISH] Done. Live.")
-        except Exception as e:
-            print(f"[PUBLISH] Error: {e}")
-        finally:
+            # 3. Git Push (Safe Subprocess)
+            print("[PUBLISH] Pushing to GitHub...")
+            subprocess.run(["git", "add", "."], check=True, cwd=WEBSITE_DIR)
+            subprocess.run(["git", "commit", "-m", "Auto-publish new article"], check=True, cwd=WEBSITE_DIR)
+            subprocess.run(["git", "push"], check=True, cwd=WEBSITE_DIR)
+            
+            print("[PUBLISH] ✅ Done. Live on Facebook and Website.")
             CURRENT_DRAFT["status"] = "published"
+            
+        except subprocess.CalledProcessError as e:
+            print(f"[GIT ERROR] Git command failed: {e}")
+            CURRENT_DRAFT["status"] = "error"
+        except Exception as e:
+            print(f"[PUBLISH ERROR] {e}")
+            CURRENT_DRAFT["status"] = "error"
+
+# ---------- WEB SERVER (Flask) ----------
+app = Flask(__name__)
 
 @app.route('/', methods=['GET', 'POST'])
 def dashboard():
     if not CURRENT_DRAFT["data"]:
-        return """
-        <div style='font-family:sans-serif; background:#111; color:#eee; height:100vh; padding:50px; text-align:center;'>
-            <h1>No pending drafts.</h1>
-            <p>The AI engine is running...</p>
-            <a href="/write" style="color:#1e5fd0; font-size:20px; text-decoration:none;">✍️ Write a Custom Article</a>
-        </div>"""
+        return "<div style='font-family:sans-serif; background:#111; color:#eee; height:100vh; padding:50px; text-align:center;'><h1>No pending drafts.</h1><p>The AI engine is running...</p><a href='/write' style='color:#1e5fd0; font-size:20px; text-decoration:none;'>✍️ Write a Custom Article</a></div>"
     
     if request.method == 'POST':
         action = request.form.get('action')
@@ -93,16 +99,20 @@ def dashboard():
             
         elif action == 'approve':
             if CURRENT_DRAFT["status"] in ["approve", "published"]:
-                return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Already approved. Check your terminal for publishing progress.</h1>"
+                return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Already approved. Check terminal for progress.</h1>"
             
             CURRENT_DRAFT["status"] = "approve"
-            
-            threading.Thread(target=do_publish, args=(
+            threading.Thread(target=publish_article, args=(
                 CURRENT_DRAFT["data"], 
-                Path(CURRENT_DRAFT["web_img"]), 
-                Path(CURRENT_DRAFT["social_img"])
+                CURRENT_DRAFT["web_img"], 
+                CURRENT_DRAFT["social_img"]
             )).start()
             return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>✅ Approved! Publishing in the background. You can close this tab.</h1>"
+            
+        elif action == 'reject':
+            CURRENT_DRAFT["status"] = "reject"
+            return "<h1 style='color:white; background:#111; height:100vh; padding:50px;'>❌ Rejected.</h1>"
+
     html = """
     <html><head><style>
         body { font-family: sans-serif; background: #111; color: #eee; max-width: 1000px; margin: auto; padding: 20px; }
@@ -126,14 +136,8 @@ def dashboard():
         </div>
         
         <div class="flex">
-            <div>
-                <img src="/social_image">
-                <p style="text-align:center; color:#888;">Facebook Version</p>
-            </div>
-            <div>
-                <img src="/web_image">
-                <p style="text-align:center; color:#888;">Website Version</p>
-            </div>
+            <div><img src="/social_image"><p style="text-align:center; color:#888;">Facebook Version</p></div>
+            <div><img src="/web_image"><p style="text-align:center; color:#888;">Website Version</p></div>
         </div>
 
         <form method="POST">
@@ -166,9 +170,8 @@ def write_custom():
         byline = request.form.get('byline', 'By the Editorial Board')
         category = request.form.get('category', 'Opinion')
         editorial = request.form.get('editorial', '')
-        image_credit = request.form.get('image_credit', 'Custom Upload')
+        image_credit = request.form.get('image_credit', 'Pahayagang Palanyag')
         
-        # Save uploaded image
         file = request.files.get('image')
         source_img_path = ASSETS_DIR / "custom_upload.jpg"
         if file and file.filename != '':
@@ -176,27 +179,23 @@ def write_custom():
         else:
             Image.new("RGB", (1200, 630), (20, 40, 80)).save(source_img_path)
 
-        # Compose Images using the exact same template
         social_img = DRAFTS_DIR / "draft_social.jpg"
         web_img = DRAFTS_DIR / "draft_web.jpg"
         compose_image(source_img_path, headline, image_credit, social_img, web_img)
 
-        # Load into the Dashboard for approval
         CURRENT_DRAFT["data"] = {
-            "headline": headline,
-            "byline": byline,
-            "category": category,
-            "editorial": editorial,
-            "social_caption": f"{headline}\n\nRead more on Pahayagang Palanyag.",
+            "headline": headline, "byline": byline, "category": category,
+            "editorial": editorial, "social_caption": f"{headline}\n\nRead more on Pahayagang Palanyag.",
             "image_credit": image_credit
         }
         CURRENT_DRAFT["source_img"] = source_img_path
         CURRENT_DRAFT["social_img"] = social_img
         CURRENT_DRAFT["web_img"] = web_img
+        CURRENT_DRAFT["status"] = "idle"
         
         return "<script>alert('Draft loaded! Please review.'); window.location.href='/';</script>"
 
-    html = """
+    return render_template_string("""
     <html><head><style>
         body { font-family: sans-serif; background: #111; color: #eee; max-width: 800px; margin: auto; padding: 40px; }
         h1 { font-family: serif; border-bottom: 2px solid #333; padding-bottom: 10px; }
@@ -207,115 +206,31 @@ def write_custom():
     </style></head><body>
         <h1>Write Custom Article</h1>
         <a href="/" style="color:#1e5fd0; text-decoration:none;">&larr; Back to Dashboard</a>
-        
         <form method="POST" enctype="multipart/form-data">
-            <label>Headline</label>
-            <input type="text" name="headline" required>
-            
-            <label>Byline</label>
-            <input type="text" name="byline" value="By the Editorial Board">
-            
+            <label>Headline</label><input type="text" name="headline" required>
+            <label>Byline</label><input type="text" name="byline" value="By the Editorial Board">
             <label>Category</label>
             <select name="category">
-                <option value="News">News</option>
-                <option value="Politics">Politics</option>
-                <option value="Metro Manila">Metro Manila</option>
-                <option value="Opinion">Opinion</option>
-                <option value="Sports">Sports</option>
-                <option value="Business">Business</option>
-                <option value="Technology">Technology</option>
-                <option value="Entertainment">Entertainment</option>
+                <option value="News">News</option><option value="Politics">Politics</option><option value="Metro Manila">Metro Manila</option>
+                <option value="Opinion">Opinion</option><option value="Sports">Sports</option><option value="Business">Business</option>
+                <option value="Technology">Technology</option><option value="Entertainment">Entertainment</option>
             </select>
-
-            <label>Image Credit (e.g., "Photo by Juan Dela Cruz")</label>
-            <input type="text" name="image_credit" value="Pahayagang Palanyag">
-            
-            <label>Upload Cover Image</label>
-            <input type="file" name="image" accept="image/*" required>
-            
-            <label>Editorial Text</label>
-            <textarea name="editorial" required></textarea>
-            
+            <label>Image Credit</label><input type="text" name="image_credit" value="Pahayagang Palanyag">
+            <label>Upload Cover Image</label><input type="file" name="image" accept="image/*" required>
+            <label>Editorial Text</label><textarea name="editorial" required></textarea>
             <button type="submit" class="btn">Generate Draft</button>
         </form>
-    </body></html>
-    """
-    return render_template_string(html)
+    </body></html>""")
 
 @app.route('/social_image')
-def serve_social():
-    return open(CURRENT_DRAFT["social_img"], "rb").read()
-
+def serve_social(): return open(CURRENT_DRAFT["social_img"], "rb").read()
 @app.route('/web_image')
-def serve_web():
-    return open(CURRENT_DRAFT["web_img"], "rb").read()
+def serve_web(): return open(CURRENT_DRAFT["web_img"], "rb").read()
 
 def run_server():
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
-# ---------- MAIN CYCLE (AI) ----------
-def full_cycle():
-    generate_favicon()
-    articles = fetch_articles(2)
-    if not articles: return
-    art = articles[0]
-    
-    try: data = ai_write(art)
-    except Exception as e:
-        print(f"[AI] failed: {e}"); return
-
-    source_img = ASSETS_DIR / "source_image.jpg"
-    download_image(art["link"], source_img, data["headline"])
-    
-    social_img = DRAFTS_DIR / "draft_social.jpg"
-    web_img = DRAFTS_DIR / "draft_web.jpg"
-    compose_image(source_img, data["headline"], data["image_credit"], social_img, web_img)
-
-    # Load into Dashboard
-    CURRENT_DRAFT["data"] = data
-    CURRENT_DRAFT["source_img"] = source_img
-    CURRENT_DRAFT["social_img"] = social_img
-    CURRENT_DRAFT["web_img"] = web_img
-    CURRENT_DRAFT["status"] = "waiting"
-    CURRENT_DRAFT["publishing"] = False # Reset the lock for the new draft
-    
-    print("\n" + "="*50)
-    print(f"👉 AI DRAFT READY: http://localhost:5000")
-    print("="*50 + "\n")
-    
-    # Wait for human approval in the browser
-    while CURRENT_DRAFT["status"] == "waiting":
-        time.sleep(2)
-
-# ---------- FAVICON GENERATOR ----------
-def generate_favicon():
-    """Takes PPICON.png, puts it on a white circle, and saves as favicon."""
-    ppicon_path = ASSETS_DIR / "PPICON.png"
-    favicon_path = WEBSITE_DIR / "favicon.png"
-    
-    if ppicon_path.exists():
-        try:
-            # Create a white circle base
-            size = 128
-            favicon = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-            draw = ImageDraw.Draw(favicon)
-            draw.ellipse((0, 0, size, size), fill=(255, 255, 255, 255))
-            
-            # Paste the icon on top
-            icon = Image.open(ppicon_path).convert("RGBA")
-            icon.thumbnail((size-20, size-20))
-            
-            # Center it
-            pos_x = (size - icon.width) // 2
-            pos_y = (size - icon.height) // 2
-            favicon.paste(icon, (pos_x, pos_y), icon)
-            
-            favicon.save(favicon_path, "PNG")
-            print("[SYS] ✅ Circular favicon generated.")
-        except Exception as e:
-            print(f"[SYS] ❌ Favicon error: {e}")
-
-# ---------- AI SCHEMA & PROMPT ----------
+# ---------- AI WRITER ----------
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -337,6 +252,7 @@ Your writing is analytical, factual, elegant, and thought-provoking.
 Source: {source}
 Title: {title}
 Text:
+
 
 ### TASK
 Write a 4-6 paragraph editorial (minimum 400 words). Do not give up halfway. Do not use clichés.
@@ -364,11 +280,11 @@ def ai_write(article):
     
     resp = ollama.chat(
         model=MODEL_NAME, messages=[{"role": "user", "content": prompt}],
-        format=SCHEMA, 
-        options={"temperature": 0.6, "num_predict": 8192, "num_ctx": 8192} 
+        format=SCHEMA, options={"temperature": 0.6, "num_predict": 8192, "num_ctx": 8192}
     )
     return json.loads(resp["message"]["content"])
 
+# ---------- IMAGE COMPOSER (Fixes Issue 3) ----------
 def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
     original_img = Image.open(source_img_path).convert("RGBA")
     logo_path = ASSETS_DIR / "logo.png"
@@ -376,36 +292,29 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
     font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
     font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
 
-    # --- CREDIT LINE FALLBACK ---
-    # If the AI says "None", "null", or leaves it blank, provide a default.
-    clean_credit = credit.strip() if credit else ""
-    if not clean_credit or clean_credit.lower() in ["none", "null", "n/a"]:
+    # Sanitize Credit
+    clean_credit = str(credit).strip() if credit else ""
+    if clean_credit.lower() in ["none", "null", "n/a", ""]:
         clean_credit = "Photo via Source Article"
-    
     credit_text = f"📷 {clean_credit}"
 
     def add_overlays(base_img, is_social=False):
         draw = ImageDraw.Draw(base_img, 'RGBA')
         
-        # 1. MASSIVE Logo Box (Top Right)
+        # MASSIVE Logo Box
         if logo_path.exists():
             logo = Image.open(logo_path).convert("RGBA")
-            box_size = 250 if is_social else 300 # Huge logo
+            box_size = 250 if is_social else 300
             logo.thumbnail((box_size - 30, box_size - 30))
             box_x1 = base_img.width - box_size - 20
-            box_y1 = 0
-            # Draw white background box
-            draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
-            # Paste logo
-            base_img.paste(logo, (box_x1 + (box_size - logo.width)//2, box_y1 + (box_size - logo.height)//2), logo)
-        else:
-            print("[IMG] WARNING: Logo not found in assets folder.")
+            draw.rectangle([(box_x1, 0), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
+            base_img.paste(logo, (box_x1 + (box_size - logo.width)//2, (box_size - logo.height)//2), logo)
 
-        # 2. Credit Line
+        # Credit Line
         draw.rectangle([(0, base_img.height - 40), (base_img.width, base_img.height)], fill=(0, 0, 0, 200))
         draw.text((20, base_img.height - 30), credit_text, font=font_small, fill=(220, 220, 220))
 
-        # 3. Lower Third (ONLY for Facebook)
+        # Lower Third (Facebook Only)
         if is_social:
             box_height = 180
             box_y_start = base_img.height - box_height
@@ -428,23 +337,21 @@ def compose_image(source_img_path, headline, credit, social_out_path, web_out_pa
                 draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
                 y_text += 45
 
-    # Website Image: Clean, no text overlay
     web_img = original_img.copy()
     add_overlays(web_img, is_social=False)
     web_img.convert("RGB").save(web_out_path, quality=92)
 
-    # Social Image: Cropped to 1200x630, WITH text overlay
     social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
     add_overlays(social_img, is_social=True)
     social_img.convert("RGB").save(social_out_path, quality=92)
 
-# ---------- PUBLISHING ----------
+# ---------- PUBLISHING HELPERS ----------
 def publish_to_facebook(image_path, caption):
     url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/photos"
     with open(image_path, "rb") as f:
         r = requests.post(url, data={"message": caption, "access_token": FACEBOOK_PAGE_ACCESS_TOKEN}, files={"source": f})
     if r.status_code == 200:
-        print(f"[FB] ✅ Successfully posted to Facebook!")
+        print(f"[FB] ✅ Successfully posted!")
     else:
         print(f"[FB] ❌ Error: {r.text}")
 
@@ -453,7 +360,6 @@ def publish_to_website(article_data, image_filename):
     cat_dir = ARTICLES_DIR / cat_slug
     cat_dir.mkdir(exist_ok=True)
     
-    # INCREASED TO 120 CHARACTERS
     art_slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
     new_image_name = f"{art_slug}.jpg"
     paragraphs = ''.join(f'<p>{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
@@ -462,24 +368,20 @@ def publish_to_website(article_data, image_filename):
     if len(byline_text) < 3:
         byline_text = "By the Editorial Board"
     
+    # Sanitize Credit for HTML
+    clean_credit = str(article_data.get('image_credit', '')).strip()
+    if clean_credit.lower() in ["none", "null", "n/a", ""]:
+        clean_credit = "Photo via Source Article"
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>{article_data['headline']} | Pahayagang Palanyag</title>
-    <link rel="icon" href="../../favicon.png">
-    <link rel="stylesheet" href="../../style.css">
+    <meta charset="utf-8"><title>{article_data['headline']} | Pahayagang Palanyag</title>
+    <link rel="icon" href="../../favicon.png"><link rel="stylesheet" href="../../style.css">
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <header class="site-header">
-        <div class="container">
-            <a href="../../index.html" class="header-brand">
-                <img src="../../PPICON.png" class="header-icon">
-                <img src="../../PPTITLE.png" class="header-text-img">
-            </a>
-        </div>
-    </header>
+    <header class="site-header"><div class="container"><a href="../../index.html" class="header-brand"><img src="../../PPICON.png" class="header-icon"><img src="../../PPTITLE.png" class="header-text-img"></a></div></header>
     <nav class="site-nav"><a href="../../index.html">Home</a></nav>
     <main class="container">
         <div class="article-header">
@@ -488,36 +390,56 @@ def publish_to_website(article_data, image_filename):
         </div>
         <img src="{new_image_name}" class="hero-image-article">
         <div class="article-content">{paragraphs}</div>
+        <p style="text-align:center; font-size:0.8rem; color:#888; margin-top:-40px; margin-bottom:40px;">{clean_credit}</p>
     </main>
 </body>
 </html>"""
     (cat_dir / f"{art_slug}.html").write_text(html)
     shutil.copy(DRAFTS_DIR / image_filename, cat_dir / new_image_name)
-    
-    if (ASSETS_DIR / "PPICON.png").exists(): shutil.copy(ASSETS_DIR / "PPICON.png", WEBSITE_DIR / "PPICON.png")
-    if (ASSETS_DIR / "PPTITLE.png").exists(): shutil.copy(ASSETS_DIR / "PPTITLE.png", WEBSITE_DIR / "PPTITLE.png")
 
 def update_homepage():
-        # FORCE SYNC ASSETS TO WEBSITE FOLDER
+    # Force Sync Assets
     if (ASSETS_DIR / "PPICON.png").exists(): shutil.copy(ASSETS_DIR / "PPICON.png", WEBSITE_DIR / "PPICON.png")
     if (ASSETS_DIR / "PPTITLE.png").exists(): shutil.copy(ASSETS_DIR / "PPTITLE.png", WEBSITE_DIR / "PPTITLE.png")
     if (ASSETS_DIR / "logo.png").exists(): shutil.copy(ASSETS_DIR / "logo.png", WEBSITE_DIR / "logo.png")
+
     items = [p for p in ARTICLES_DIR.rglob("*.html") if p.name != "index.html"]
     items = sorted(items, key=os.path.getmtime, reverse=True)
-    if not items: return
+
+    categories = [d.name for d in ARTICLES_DIR.iterdir() if d.is_dir()]
+    nav_links = "".join([f'<a href="articles/{cat}/index.html">{cat.replace("-", " ").title()}</a>' for cat in categories])
+    nav_html = f'<nav class="site-nav"><a href="index.html">Home</a>{nav_links}</nav>'
+
+    # --- HANDLE EMPTY STATE ---
+    if not items:
+        (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"><title>Pahayagang Palanyag</title>
+    <link rel="icon" href="favicon.png"><link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="top-bar"><div class="container"><span>{datetime.datetime.now().strftime('%A, %B %d, %Y')}</span> <span>Paranaque, Metro Manila</span></div></div>
+    <header class="site-header"><div class="container"><a href="index.html" class="header-brand"><img src="PPICON.png" class="header-icon"><img src="PPTITLE.png" class="header-text-img"></a></div></header>
+    {nav_html}
+    <main class="container" style="text-align:center; padding: 150px 20px;">
+        <h2 style="font-family: var(--serif); font-size: 2rem; color: #666;">No articles published yet.</h2>
+        <p style="margin-top:20px; color:#888;">The engine is running. New stories will appear here.</p>
+    </main>
+</body>
+</html>""")
+        print("[WEB] Homepage cleared. No articles.")
+        return
+    # ------------------------
 
     def get_true_title(p):
-        # Reads the actual headline from the HTML file
         try:
             soup = BeautifulSoup(p.read_text(encoding='utf-8'), 'html.parser')
             h1 = soup.find('h1', class_='article-title')
             if h1: return h1.text.strip()
         except: pass
-        return p.stem.replace("-", " ").title() # Fallback
-
-    categories = [d.name for d in ARTICLES_DIR.iterdir() if d.is_dir()]
-    nav_links = "".join([f'<a href="articles/{cat}/index.html">{cat.replace("-", " ").title()}</a>' for cat in categories])
-    nav_html = f'<nav class="site-nav"><a href="index.html">Home</a>{nav_links}</nav>'
+        return p.stem.replace("-", " ").title()
 
     featured = items[0]
     f_title = get_true_title(featured)
@@ -537,12 +459,7 @@ def update_homepage():
         t = get_true_title(p)
         i = p.with_suffix('.jpg').name
         c = p.parent.name
-        hero_html += f"""
-            <div class="sidebar-story">
-                <img src="articles/{c}/{i}">
-                <h3><a href="articles/{c}/{p.name}">{t}</a></h3>
-            </div>
-        """
+        hero_html += f'<div class="sidebar-story"><img src="articles/{c}/{i}"><h3><a href="articles/{c}/{p.name}">{t}</a></h3></div>'
     hero_html += "</div></div>"
 
     grid_cards = ""
@@ -560,17 +477,8 @@ def update_homepage():
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="top-bar">
-        <div class="container"><span>{datetime.datetime.now().strftime('%A, %B %d, %Y')}</span> <span>Paranaque, Metro Manila</span></div>
-    </div>
-    <header class="site-header">
-        <div class="container">
-            <a href="index.html" class="header-brand">
-                <img src="PPICON.png" class="header-icon">
-                <img src="PPTITLE.png" class="header-text-img">
-            </a>
-        </div>
-    </header>
+    <div class="top-bar"><div class="container"><span>{datetime.datetime.now().strftime('%A, %B %d, %Y')}</span> <span>Paranaque, Metro Manila</span></div></div>
+    <header class="site-header"><div class="container"><a href="index.html" class="header-brand"><img src="PPICON.png" class="header-icon"><img src="PPTITLE.png" class="header-text-img"></a></div></header>
     {nav_html}
     <main class="container">
         {hero_html}
@@ -600,69 +508,13 @@ def update_homepage():
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-    <header class="site-header">
-        <div class="container">
-            <a href="../../index.html" class="header-brand">
-                <img src="../../PPICON.png" class="header-icon">
-                <img src="../../PPTITLE.png" class="header-text-img">
-            </a>
-        </div>
-    </header>
+    <header class="site-header"><div class="container"><a href="../../index.html" class="header-brand"><img src="../../PPICON.png" class="header-icon"><img src="../../PPTITLE.png" class="header-text-img"></a></div></header>
     {nav_html.replace('href="articles/', 'href="../')} 
-    <main class="container">
-        <h2 class="section-title">{cat.replace("-", " ").title()}</h2>
-        <div class="news-grid">{cat_cards}</div>
-    </main>
+    <main class="container"><h2 class="section-title">{cat.replace("-", " ").title()}</h2><div class="news-grid">{cat_cards}</div></main>
 </body>
 </html>""")
 
-    print("[WEB] ✅ Homepage and Categories updated with full headlines")
-
-# ---------- APPROVAL ----------
-def send_for_approval(source_img, social_img, web_img, article_data):
-    CURRENT_DRAFT["data"] = article_data
-    CURRENT_DRAFT["source_img"] = source_img
-    CURRENT_DRAFT["social_img"] = social_img
-    CURRENT_DRAFT["web_img"] = web_img
-    CURRENT_DRAFT["status"] = "waiting"
-    
-    print("\n" + "="*50)
-    print(f"👉 BROWSER FALLBACK: http://localhost:5000")
-    print("="*50 + "\n")
-
-    keyboard = {"inline_keyboard": [
-        [{"text": "✅ Approve & Publish", "callback_data": "approve"}],
-        [{"text": "❌ Reject", "callback_data": "reject"}]
-    ]}
-    
-    with open(social_img, "rb") as f:
-        requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": f})
-    
-    full_text = f"📰 *HEADLINE:*\n{article_data['headline']}\n\n👤 *BYLINE:*\n{article_data.get('byline', 'Staff')}\n\n📝 *EDITORIAL:*\n{article_data['editorial']}"
-    requests.post(f"{TELEGRAM_API}/sendMessage", data={
-        "chat_id": TELEGRAM_CHAT_ID, "text": full_text[:4000],
-        "reply_markup": json.dumps(keyboard)
-    })
-
-    offset = None
-    while True:
-        # Check if approved/rejected via Browser
-        if CURRENT_DRAFT["status"] != "waiting":
-            return CURRENT_DRAFT["status"]
-            
-        # Check if approved/rejected via Telegram
-        try:
-            r = requests.get(f"{TELEGRAM_API}/getUpdates", params={"offset": offset}, timeout=5)
-            for update in r.json().get("result", []):
-                offset = update["update_id"] + 1
-                if "callback_query" in update:
-                    ans = update["callback_query"]["data"]
-                    requests.post(f"{TELEGRAM_API}/answerCallbackQuery", data={"callback_query_id": update["callback_query"]["id"]})
-                    return ans
-        except Exception:
-            pass
-        time.sleep(2)
-# ---------- CYCLE ----------
+# ---------- MAIN AI CYCLE (Fixes Issue 2) ----------
 def full_cycle():
     generate_favicon()
     articles = fetch_articles(2)
@@ -680,25 +532,40 @@ def full_cycle():
     web_img = DRAFTS_DIR / "draft_web.jpg"
     compose_image(source_img, data["headline"], data["image_credit"], social_img, web_img)
 
-    action = send_for_approval(source_img, social_img, web_img, data)
-
-    if action == "approve":
-        slug = re.sub(r"[^a-z0-9]+", "-", data["headline"].lower()).strip("-")[:60]
-        article_url = f"https://pahayagangpalanyag.pages.dev/articles/{re.sub(r'[^a-z0-9]+', '-', data['category'].lower()).strip('-')}/{slug}.html"
-        
-        print("[PUBLISH] Posting to Facebook...")
-        publish_to_facebook(social_img, f"{data['social_caption']}\n\nRead here: {article_url}")
-        
-        print("[PUBLISH] Writing to Website...")
-        publish_to_website(data, "draft_web.jpg")
-        update_homepage()
-        
-        os.chdir(WEBSITE_DIR)
-        os.system("git add . && git commit -m 'New Post' && git push")
-        os.chdir(BASE_DIR)
-        print("[PUBLISH] Done. Live.")
+    # Load into Dashboard
+    CURRENT_DRAFT["data"] = data
+    CURRENT_DRAFT["source_img"] = source_img
+    CURRENT_DRAFT["social_img"] = social_img
+    CURRENT_DRAFT["web_img"] = web_img
+    CURRENT_DRAFT["status"] = "waiting"
+    
+    print("\n" + "="*50)
+    print(f"👉 AI DRAFT READY: http://localhost:5000")
+    print("="*50 + "\n")
+    
+    # Wait for approval (Dashboard thread handles the actual publishing)
+    while CURRENT_DRAFT["status"] == "waiting":
+        time.sleep(2)
+    
+    # Let the publisher thread finish before starting the next 4-hour cycle
+    time.sleep(5)
 
 # ---------- UTILS ----------
+def generate_favicon():
+    ppicon_path = ASSETS_DIR / "PPICON.png"
+    favicon_path = WEBSITE_DIR / "favicon.png"
+    if ppicon_path.exists():
+        try:
+            size = 128
+            favicon = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+            draw = ImageDraw.Draw(favicon)
+            draw.ellipse((0, 0, size, size), fill=(255, 255, 255, 255))
+            icon = Image.open(ppicon_path).convert("RGBA")
+            icon.thumbnail((size-20, size-20))
+            favicon.paste(icon, ((size - icon.width) // 2, (size - icon.height) // 2), icon)
+            favicon.save(favicon_path, "PNG")
+        except Exception as e: print(f"[SYS] ❌ Favicon error: {e}")
+
 def get_full_article(url):
     try:
         r = cffi_requests.get(url, impersonate="chrome120", timeout=15)
@@ -706,208 +573,99 @@ def get_full_article(url):
         return "\n".join([p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 40])[:4000]
     except: return ""
 
-def download_image(article_url, save_path, headline):
-    print(f"[IMG] Attempting to scrape: {article_url}")
+def download_image(url, path, headline):
+    print(f"[IMG] Attempting to scrape: {url}")
     try:
-        # Use curl_cffi for the main page
-        r = cffi_requests.get(article_url, impersonate="chrome120", timeout=15)
+        r = cffi_requests.get(url, impersonate="chrome120", timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
-        
         img_url = None
         
-        # 1. Check standard Meta Tags
+        # 1. Meta tags (skip if it's a generic logo)
         for tag in [{"property": "og:image"}, {"name": "twitter:image"}, {"itemprop": "image"}]:
             found = soup.find("meta", attrs=tag)
             if found and found.get("content"):
-                img_url = found["content"]
-                break
-                
-        # 2. Check for modern srcset
+                content = found["content"]
+                if not any(x in content.lower() for x in ['logo', 'icon', 'default', 'avatar']):
+                    img_url = content
+                    break
+                    
+        # 2. srcset
         if not img_url:
             for img in soup.find_all('img'):
                 if img.get('srcset'):
-                    # Grab the highest resolution from srcset
-                    srcset = img['srcset'].split(',')
-                    highest_res = srcset[-1].strip().split(' ')[0]
-                    if highest_res.startswith('http'):
+                    highest_res = img['srcset'].split(',')[-1].strip().split(' ')[0]
+                    if highest_res.startswith('http') and not any(x in highest_res.lower() for x in ['logo', 'icon']): 
                         img_url = highest_res
                         break
-
-        # 3. Fallback to standard src/data-src
+                        
+        # 3. src / data-src
         if not img_url:
             for img in soup.find_all('img'):
                 src = img.get('data-src') or img.get('src')
-                if src and ('upload' in src or 'image' in src) and 'logo' not in src.lower():
+                if src and ('upload' in src or 'image' in src) and not any(x in src.lower() for x in ['logo', 'icon', 'avatar']):
                     img_url = src
                     break
-
+                    
         if img_url:
-            # Handle protocol-relative URLs (e.g., //cdn.inquirer.net/...)
-            if img_url.startswith('//'):
+            if img_url.startswith('//'): 
                 img_url = 'https:' + img_url
-            else:
-                img_url = urljoin(article_url, img_url)
+            else: 
+                img_url = urljoin(url, img_url)
                 
             print(f"[IMG] Found image URL: {img_url[:80]}")
             
-            # CRITICAL FIX: Pass the article_url as the Referer to bypass hotlink protection
-            headers = {
-                'Referer': article_url,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            
+            # FIX: Only pass Referer. Let curl_cffi handle the User-Agent.
+            headers = {'Referer': url}
             img_resp = cffi_requests.get(img_url, headers=headers, impersonate="chrome120", timeout=15)
             
             if 'image' in img_resp.headers.get('Content-Type', '').lower():
-                with open(save_path, 'wb') as f:
+                with open(path, 'wb') as f: 
                     f.write(img_resp.content)
                 print(f"[IMG] ✅ Successfully downloaded image.")
                 return True
             else:
-                print(f"[IMG] ❌ Server returned Content-Type: {img_resp.headers.get('Content-Type')}")
-                
+                print(f"[IMG] ❌ URL returned non-image: {img_resp.headers.get('Content-Type')}")
+        else:
+            print("[IMG] ❌ No image URL found on page.")
+            
     except Exception as e:
         print(f"[IMG] ❌ Scrape failed: {e}")
-
-    # FALLBACK: Generate the dark blue gradient
-    print("[IMG] 🎨 Generating fallback gradient image...")
-    img = Image.new("RGB", (1200, 630), (10, 25, 50))
-    draw = ImageDraw.Draw(img)
-    for y in range(630):
-        r = int(10 + (30 - 10) * (y / 630))
-        g = int(25 + (70 - 25) * (y / 630))
-        b = int(50 + (150 - 50) * (y / 630))
-        draw.line([(0, y), (1200, y)], fill=(r, g, b))
-    img.save(save_path)
+        
+    print("[IMG] 🎨 Generating fallback gradient...")
+    Image.new("RGB", (1200, 630), (10, 25, 50)).save(path)
     return True
 
-def compose_image(source_img_path, headline, credit, social_out_path, web_out_path):
-    original_img = Image.open(source_img_path).convert("RGBA")
-    logo_path = ASSETS_DIR / "logo.png"
-    
-    font_bold = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
-    font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+def load_context(): return CONTEXT_FILE.read_text() if CONTEXT_FILE.exists() else ""
 
-    def add_overlays(base_img, is_social=False):
-        draw = ImageDraw.Draw(base_img, 'RGBA')
-        
-        # 1. Smoked Glass Credit
-        grad_height = 60
-        for y in range(grad_height):
-            alpha = int(180 * (y / grad_height))
-            draw.line([(0, base_img.height - grad_height + y), (base_img.width, base_img.height - grad_height + y)], fill=(0, 0, 0, alpha))
-        draw.text((20, base_img.height - 25), f"📷 {credit}", font=font_small, fill=(220, 220, 220))
-
-        # 2. Perfect Square Logo (Top Right, Flush top, 20px margin)
-        if logo_path.exists():
-            logo = Image.open(logo_path).convert("RGBA")
-            logo.thumbnail((80, 80))
-            box_size = 100
-            box_x1 = base_img.width - box_size - 20
-            box_y1 = 0
-            draw.rectangle([(box_x1, box_y1), (base_img.width - 20, box_size)], fill=(255, 255, 255, 255))
-            paste_x = box_x1 + (box_size - logo.width) // 2
-            paste_y = box_y1 + (box_size - logo.height) // 2
-            base_img.paste(logo, (paste_x, paste_y), logo)
-
-        # 3. Straight Lower Third (Only for Social)
-        if is_social:
-            # Solid blue rectangle
-            draw.rectangle([(0, 450), (1200, 630)], fill=(30, 95, 208, 255)) # Solid Blue
-            
-            # Straight black tag for branding
-            draw.rectangle([(0, 430), (350, 470)], fill=(10, 10, 10, 255))
-            draw.text((20, 440), "PAHAYAGANG PALANYAG", font=font_small, fill=(255, 255, 255))
-
-            # Text wrapping
-            words = headline.split()
-            lines, current = [], ""
-            for word in words:
-                if font_bold.getlength(f"{current} {word}".strip()) < 1050:
-                    current = f"{current} {word}".strip()
-                else:
-                    lines.append(current); current = word
-            if current: lines.append(current)
-            
-            y_text = 480
-            for line in lines[:3]:
-                draw.text((40, y_text), line, font=font_bold, fill=(255, 255, 255))
-                y_text += 45
-
-    web_img = original_img.copy()
-    add_overlays(web_img, is_social=False)
-    web_img.convert("RGB").save(web_out_path, quality=92)
-
-    social_img = ImageOps.fit(original_img, (1200, 630), Image.Resampling.LANCZOS)
-    add_overlays(social_img, is_social=True)
-    social_img.convert("RGB").save(social_out_path, quality=92)
-
-def load_context(): 
-    return CONTEXT_FILE.read_text() if CONTEXT_FILE.exists() else ""
-
-def adsense_head(): 
-    return ""
-
-# --- REAL RSS FETCHER ---
-DEFAULT_SOURCES = {
-    "tier_1_gov": ["https://www.paranaquecity.gov.ph/feed/", "https://pna.gov.ph/feed"],
-    "tier_2_news": [
-        "https://www.inquirer.net/fullfeed",
-        "https://www.philstar.com/rss/nation",
-        "https://www.rappler.com/feed/",
-        "https://news.abs-cbn.com/feed/rss",
-        "https://www.gmanetwork.com/news/rss/nation/",
-        "https://mb.com.ph/feed/",
-        "https://www.manilatimes.net/feed/",
-        "https://businessmirror.com.ph/feed/"
-    ]
-}
+DEFAULT_SOURCES = {"tier_1_gov": ["https://www.paranaquecity.gov.ph/feed/", "https://pna.gov.ph/feed"], "tier_2_news": ["https://www.inquirer.net/fullfeed", "https://www.philstar.com/rss/nation", "https://www.rappler.com/feed/", "https://news.abs-cbn.com/feed/rss", "https://www.gmanetwork.com/news/rss/nation/", "https://mb.com.ph/feed/", "https://www.manilatimes.net/feed/", "https://businessmirror.com.ph/feed/"]}
 
 def load_sources():
-    if SOURCES_FILE.exists():
-        return json.loads(SOURCES_FILE.read_text())
-    else:
-        SOURCES_FILE.write_text(json.dumps(DEFAULT_SOURCES, indent=2))
-        return DEFAULT_SOURCES
+    if SOURCES_FILE.exists(): return json.loads(SOURCES_FILE.read_text())
+    SOURCES_FILE.write_text(json.dumps(DEFAULT_SOURCES, indent=2))
+    return DEFAULT_SOURCES
 
 def fetch_articles(limit_per_tier=2):
     articles = []
-    sources = load_sources()
-    for tier, urls in sources.items():
+    for tier, urls in load_sources().items():
         if tier == "tier_3_social": continue
         for url in urls:
             try:
                 feed = feedparser.parse(url)
                 for entry in feed.entries[:limit_per_tier]:
-                    articles.append({
-                        "title": entry.title, "link": entry.link,
-                        "summary": entry.get("summary", ""),
-                        "source": feed.feed.get("title", url), "tier": tier
-                    })
+                    articles.append({"title": entry.title, "link": entry.link, "summary": entry.get("summary", ""), "source": feed.feed.get("title", url), "tier": tier})
             except: pass
     articles.sort(key=lambda x: x["tier"])
     return articles
 
-import sys
-
 if __name__ == "__main__":
     print("Starting Pahayagang Palanyag...")
-    # Always start the web server in the background
     threading.Thread(target=run_server, daemon=True).start()
     
     if "--editor" in sys.argv:
-        print("\n" + "="*50)
-        print("🖋️  RUNNING IN EDITOR-ONLY MODE.")
-        print("👉 Go to: http://localhost:5000/write")
-        print("The AI is NOT running. Press Ctrl+C to stop.")
-        print("="*50 + "\n")
-        while True:
-            time.sleep(1) # Keeps the script running
+        print("\n🖋️  RUNNING IN EDITOR-ONLY MODE. Go to: http://localhost:5000/write")
+        while True: time.sleep(1)
     else:
-        print("\n" + "="*50)
-        print("🤖 RUNNING FULL AI ENGINE.")
-        print("The AI will fetch news and send drafts to http://localhost:5000")
-        print("="*50 + "\n")
+        print("\n🤖 RUNNING FULL AI ENGINE.")
         full_cycle()
         schedule.every(4).hours.do(full_cycle)
         while True:
