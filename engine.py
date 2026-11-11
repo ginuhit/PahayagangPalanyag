@@ -362,40 +362,89 @@ def publish_to_website(article_data, image_filename):
     
     art_slug = re.sub(r"[^a-z0-9]+", "-", article_data["headline"].lower()).strip("-")[:120]
     new_image_name = f"{art_slug}.jpg"
-    paragraphs = ''.join(f'<p>{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
+    
+    # Convert editorial into Tailwind-styled paragraphs
+    paragraphs = ''.join(f'<p class="mb-6 text-lg text-zinc-700 leading-relaxed">{p}</p>' for p in article_data['editorial'].split(chr(10)) if p.strip())
     
     byline_text = article_data.get('byline', '').strip()
-    if len(byline_text) < 3:
-        byline_text = "By the Editorial Board"
+    if len(byline_text) < 3: byline_text = "By the Editorial Board"
     
-    # Sanitize Credit for HTML
     clean_credit = str(article_data.get('image_credit', '')).strip()
-    if clean_credit.lower() in ["none", "null", "n/a", ""]:
-        clean_credit = "Photo via Source Article"
+    if clean_credit.lower() in ["none", "null", "n/a", ""]: clean_credit = "Photo via Source Article"
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8"><title>{article_data['headline']} | Pahayagang Palanyag</title>
-    <link rel="icon" href="../../favicon.png"><link rel="stylesheet" href="../../style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{article_data['headline']} | Pahayagang Palanyag</title>
+    <link rel="icon" href="../../favicon.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {{
+        theme: {{
+          extend: {{
+            fontFamily: {{ serif: ['"Playfair Display"', 'serif'], sans: ['Inter', 'sans-serif'] }}
+          }}
+        }}
+      }}
+    </script>
+    <style>body {{ background-color: #fff; color: #18181b; }}</style>
 </head>
-<body>
-    <header class="site-header"><div class="container"><a href="../../index.html" class="header-brand"><img src="../../PPICON.png" class="header-icon"><img src="../../PPTITLE.png" class="header-text-img"></a></div></header>
-    <nav class="site-nav"><a href="../../index.html">Home</a></nav>
-    <main class="container">
-        <div class="article-header">
-            <h1 class="article-title">{article_data['headline']}</h1>
-            <p class="byline">{byline_text} | {article_data.get('category', 'News')}</p>
+<body class="font-sans antialiased">
+
+    <!-- NAVIGATION -->
+    <nav class="sticky top-0 z-50 border-b border-zinc-200 bg-white/80 backdrop-blur-md">
+      <div class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+        <a href="../../index.html" class="flex items-center gap-2">
+            <img src="../../PPICON.png" class="h-10 w-auto">
+            <img src="../../PPTITLE.png" class="h-8 w-auto mt-1">
+        </a>
+        <div class="hidden space-x-8 text-sm font-medium uppercase tracking-widest md:flex">
+          <a href="../../index.html" class="hover:text-zinc-500 transition">Home</a>
         </div>
-        <img src="{new_image_name}" class="hero-image-article">
-        <div class="article-content">{paragraphs}</div>
-        <p style="text-align:center; font-size:0.8rem; color:#888; margin-top:-40px; margin-bottom:40px;">{clean_credit}</p>
+      </div>
+    </nav>
+
+    <main class="mx-auto max-w-4xl px-6 py-16">
+        <!-- ARTICLE HEADER -->
+        <div class="text-center mb-12">
+            <span class="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500">{article_data.get('category', 'News')}</span>
+            <h1 class="mt-4 font-serif text-4xl md:text-6xl font-black leading-tight">{article_data['headline']}</h1>
+            <div class="mt-6 flex items-center justify-center text-sm text-zinc-500 font-medium">
+                <span>{byline_text}</span>
+                <span class="mx-3">•</span>
+                <span>{datetime.datetime.now().strftime('%B %d, %Y')}</span>
+            </div>
+        </div>
+
+        <!-- HERO IMAGE -->
+        <div class="mb-12">
+            <img src="{new_image_name}" alt="{article_data['headline']}" class="w-full rounded-sm">
+            <p class="mt-3 text-xs text-zinc-400 text-right">{clean_credit}</p>
+        </div>
+
+        <!-- ARTICLE CONTENT -->
+        <article class="mx-auto max-w-2xl font-sans">
+            {paragraphs}
+        </article>
     </main>
+
+    <footer class="mt-24 border-t border-zinc-200 bg-zinc-50 py-12">
+      <div class="mx-auto max-w-7xl px-6 text-center">
+        <div class="flex justify-center items-center gap-2 mb-4">
+            <img src="../../PPICON.png" class="h-8 w-auto">
+            <img src="../../PPTITLE.png" class="h-6 w-auto mt-1">
+        </div>
+        <p class="text-xs text-zinc-500 uppercase tracking-widest">© {datetime.datetime.now().year} Pahayagang Palanyag. All rights reserved.</p>
+      </div>
+    </footer>
 </body>
 </html>"""
     (cat_dir / f"{art_slug}.html").write_text(html)
     shutil.copy(DRAFTS_DIR / image_filename, cat_dir / new_image_name)
+
 
 def update_homepage():
     # Force Sync Assets
@@ -407,112 +456,156 @@ def update_homepage():
     items = sorted(items, key=os.path.getmtime, reverse=True)
 
     categories = [d.name for d in ARTICLES_DIR.iterdir() if d.is_dir()]
-    nav_links = "".join([f'<a href="articles/{cat}/index.html">{cat.replace("-", " ").title()}</a>' for cat in categories])
-    nav_html = f'<nav class="site-nav"><a href="index.html">Home</a>{nav_links}</nav>'
+    nav_links = "".join([f'<a href="articles/{cat}/index.html" class="hover:text-zinc-500 transition">{cat.replace("-", " ").title()}</a>' for cat in categories])
 
-    # --- HANDLE EMPTY STATE ---
     if not items:
-        (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8"><title>Pahayagang Palanyag</title>
-    <link rel="icon" href="favicon.png"><link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
-</head>
-<body>
-    <div class="top-bar"><div class="container"><span>{datetime.datetime.now().strftime('%A, %B %d, %Y')}</span> <span>Paranaque, Metro Manila</span></div></div>
-    <header class="site-header"><div class="container"><a href="index.html" class="header-brand"><img src="PPICON.png" class="header-icon"><img src="PPTITLE.png" class="header-text-img"></a></div></header>
-    {nav_html}
-    <main class="container" style="text-align:center; padding: 150px 20px;">
-        <h2 style="font-family: var(--serif); font-size: 2rem; color: #666;">No articles published yet.</h2>
-        <p style="margin-top:20px; color:#888;">The engine is running. New stories will appear here.</p>
-    </main>
-</body>
-</html>""")
-        print("[WEB] Homepage cleared. No articles.")
+        (WEBSITE_DIR / "index.html").write_text(f"<html><body class='bg-white text-center pt-40 font-sans'><h1 class='text-4xl font-serif font-bold'>No articles yet.</h1></body></html>")
         return
-    # ------------------------
 
-    def get_true_title(p):
+    def get_article_info(p):
         try:
             soup = BeautifulSoup(p.read_text(encoding='utf-8'), 'html.parser')
-            h1 = soup.find('h1', class_='article-title')
-            if h1: return h1.text.strip()
-        except: pass
-        return p.stem.replace("-", " ").title()
+            h1 = soup.find('h1')
+            title = h1.text.strip() if h1 else p.stem.replace("-", " ").title()
+            cat = p.parent.name.replace("-", " ")
+            # Try to grab the first paragraph for the excerpt
+            first_p = soup.find('p', class_='mb-6')
+            excerpt = first_p.text.strip()[:150] + "..." if first_p else "Read the full story."
+            return title, cat, excerpt
+        except:
+            return p.stem.replace("-", " ").title(), "News", "Read the full story."
 
-    featured = items[0]
-    f_title = get_true_title(featured)
-    f_img = featured.with_suffix('.jpg').name
-    f_cat = featured.parent.name
-    
+    # HERO SECTION DATA
+    hero_title, hero_cat, hero_excerpt = get_article_info(items[0])
+    hero_img = items[0].with_suffix('.jpg').name
+    hero_path = f"articles/{items[0].parent.name}/{items[0].name}"
+
     hero_html = f"""
-    <div class="top-layout">
-        <div class="hero-main">
-            <a href="articles/{f_cat}/{featured.name}"><img src="articles/{f_cat}/{f_img}" class="hero-image"></a>
-            <h1><a href="articles/{f_cat}/{featured.name}">{f_title}</a></h1>
-            <a href="articles/{f_cat}/{featured.name}" class="read-more">Read Full Story &rarr;</a>
+    <section class="group cursor-pointer mb-16">
+      <a href="{hero_path}">
+        <div class="overflow-hidden rounded-sm">
+          <img src="articles/{items[0].parent.name}/{hero_img}" alt="Hero Image" class="h-[500px] w-full object-cover transition duration-700 group-hover:scale-105">
         </div>
-        <div class="hero-sidebar">
+        <div class="mt-8 max-w-3xl">
+          <span class="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500">{hero_cat}</span>
+          <h1 class="mt-3 font-serif text-5xl font-black leading-tight md:text-6xl group-hover:text-zinc-600 transition">{hero_title}</h1>
+          <p class="mt-4 text-lg text-zinc-600 leading-relaxed">{hero_excerpt}</p>
+          <div class="mt-6 flex items-center text-sm text-zinc-400"><span>Read Full Story &rarr;</span></div>
+        </div>
+      </a>
+    </section>
+    <hr class="border-zinc-200 mb-16">
     """
-    for p in items[1:4]:
-        t = get_true_title(p)
-        i = p.with_suffix('.jpg').name
-        c = p.parent.name
-        hero_html += f'<div class="sidebar-story"><img src="articles/{c}/{i}"><h3><a href="articles/{c}/{p.name}">{t}</a></h3></div>'
-    hero_html += "</div></div>"
 
-    grid_cards = ""
-    for p in items[4:10]:
-        t = get_true_title(p)
-        i = p.with_suffix('.jpg').name
-        c = p.parent.name
-        grid_cards += f'<a href="articles/{c}/{p.name}" class="news-card"><img src="articles/{c}/{i}"><h2>{t}</h2></a>'
+    # GRID DATA
+    grid_html = ""
+    for p in items[1:5]:
+        title, cat, excerpt = get_article_info(p)
+        img = p.with_suffix('.jpg').name
+        path = f"articles/{p.parent.name}/{p.name}"
+        grid_html += f"""
+        <article class="group cursor-pointer flex flex-col md:flex-row gap-6">
+          <div class="w-full md:w-1/3 overflow-hidden rounded-sm">
+            <a href="{path}"><img src="articles/{p.parent.name}/{img}" class="h-48 w-full object-cover transition group-hover:scale-105"></a>
+          </div>
+          <div class="flex-1">
+            <span class="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{cat}</span>
+            <h3 class="mt-2 font-serif text-2xl font-bold group-hover:text-zinc-600 transition"><a href="{path}">{title}</a></h3>
+            <p class="mt-2 text-zinc-600 line-clamp-2">{excerpt}</p>
+            <div class="mt-4 text-xs font-bold text-zinc-900 uppercase"><a href="{path}">Read Story &rarr;</a></div>
+          </div>
+        </article>
+        """
+
+    # SIDEBAR DATA
+    sidebar_html = ""
+    for i, p in enumerate(items[5:8]):
+        title, cat, _ = get_article_info(p)
+        path = f"articles/{p.parent.name}/{p.name}"
+        sidebar_html += f"""
+        <div class="flex gap-4 items-start">
+          <span class="text-3xl font-serif text-zinc-200">0{i+1}</span>
+          <div>
+            <a href="{path}" class="font-bold hover:text-zinc-500 transition leading-snug block">{title}</a>
+            <p class="text-xs text-zinc-400 mt-1 uppercase tracking-widest">{cat}</p>
+          </div>
+        </div>
+        """
 
     (WEBSITE_DIR / "index.html").write_text(f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8"><title>Pahayagang Palanyag</title>
-    <link rel="icon" href="favicon.png"><link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pahayagang Palanyag</title>
+  <link rel="icon" href="favicon.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {{
+      theme: {{
+        extend: {{
+          fontFamily: {{ serif: ['"Playfair Display"', 'serif'], sans: ['Inter', 'sans-serif'] }}
+        }}
+      }}
+    }}
+  </script>
+  <style>body {{ background-color: #fff; color: #18181b; }}</style>
 </head>
-<body>
-    <div class="top-bar"><div class="container"><span>{datetime.datetime.now().strftime('%A, %B %d, %Y')}</span> <span>Paranaque, Metro Manila</span></div></div>
-    <header class="site-header"><div class="container"><a href="index.html" class="header-brand"><img src="PPICON.png" class="header-icon"><img src="PPTITLE.png" class="header-text-img"></a></div></header>
-    {nav_html}
-    <main class="container">
-        {hero_html}
-        <div class="section-header"><h2 class="section-title">Featured Stories</h2></div>
-        <div class="news-grid">{grid_cards}</div>
-    </main>
-</body>
-</html>""")
+<body class="font-sans antialiased">
 
-    for cat in categories:
-        cat_dir = ARTICLES_DIR / cat
-        cat_items = [p for p in cat_dir.glob("*.html") if p.name != "index.html"]
-        cat_items = sorted(cat_items, key=os.path.getmtime, reverse=True)
-        if not cat_items: continue
-        
-        cat_cards = ""
-        for p in cat_items:
-            t = get_true_title(p)
-            i = p.with_suffix('.jpg').name
-            cat_cards += f'<a href="{p.name}" class="news-card"><img src="{i}"><h2>{t}</h2></a>'
-        
-        (cat_dir / "index.html").write_text(f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8"><title>{cat.title()} | Pahayagang Palanyag</title>
-    <link rel="icon" href="../../favicon.png"><link rel="stylesheet" href="../../style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;600&display=swap" rel="stylesheet">
-</head>
-<body>
-    <header class="site-header"><div class="container"><a href="../../index.html" class="header-brand"><img src="../../PPICON.png" class="header-icon"><img src="../../PPTITLE.png" class="header-text-img"></a></div></header>
-    {nav_html.replace('href="articles/', 'href="../')} 
-    <main class="container"><h2 class="section-title">{cat.replace("-", " ").title()}</h2><div class="news-grid">{cat_cards}</div></main>
+  <nav class="sticky top-0 z-50 border-b border-zinc-200 bg-white/80 backdrop-blur-md">
+    <div class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+      <a href="index.html" class="flex items-center gap-3">
+          <img src="PPICON.png" class="h-12 w-auto">
+          <img src="PPTITLE.png" class="h-9 w-auto mt-1">
+      </a>
+      <div class="hidden space-x-8 text-sm font-medium uppercase tracking-widest md:flex">
+        <a href="index.html" class="hover:text-zinc-500 transition">Home</a>
+        {nav_links}
+      </div>
+    </div>
+  </nav>
+
+  <main class="mx-auto max-w-7xl px-6 py-12">
+    {hero_html}
+    <div class="grid grid-cols-1 gap-16 lg:grid-cols-12">
+      <div class="lg:col-span-8">
+        <h2 class="mb-8 font-serif text-3xl font-bold border-b border-zinc-900 pb-2">Latest News</h2>
+        <div class="space-y-12">
+          {grid_html}
+        </div>
+      </div>
+      <aside class="lg:col-span-4">
+        <div class="sticky top-24">
+          <h2 class="border-b border-zinc-900 pb-2 text-xs font-black uppercase tracking-[0.2em]">Trending</h2>
+          <div class="mt-6 space-y-8">
+            {sidebar_html}
+          </div>
+          <div class="mt-16 rounded-sm bg-zinc-100 p-8">
+            <h3 class="font-serif text-xl font-bold">The Morning Briefing</h3>
+            <p class="mt-2 text-sm text-zinc-600">Get the most important stories delivered to your inbox every morning.</p>
+            <input type="email" placeholder="email@example.com" class="mt-4 w-full border border-zinc-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-zinc-400">
+            <button class="mt-4 w-full bg-zinc-900 py-2 text-sm font-medium text-white transition hover:bg-zinc-700">Join Newsletter</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <footer class="mt-24 border-t border-zinc-200 bg-zinc-50 py-12">
+    <div class="mx-auto max-w-7xl px-6 text-center">
+      <div class="flex justify-center items-center gap-2 mb-4">
+          <img src="PPICON.png" class="h-10 w-auto opacity-50 grayscale">
+          <img src="PPTITLE.png" class="h-8 w-auto mt-1 opacity-50 grayscale">
+      </div>
+      <p class="mt-4 text-xs text-zinc-500 uppercase tracking-widest">© {datetime.datetime.now().year} Pahayagang Palanyag. All rights reserved.</p>
+    </div>
+  </footer>
+
 </body>
 </html>""")
+    print("[WEB] ✅ Homepage updated with Tailwind layout")
 
 # ---------- MAIN AI CYCLE (Fixes Issue 2) ----------
 def full_cycle():
