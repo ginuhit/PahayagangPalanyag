@@ -20,12 +20,11 @@
 </head>
 <body class="bg-white text-gray-900 font-sans antialiased">
 
-    <!-- Top Bar (Ticker) -->
     <div class="bg-brand text-white text-xs py-2 overflow-hidden whitespace-nowrap">
         <div class="container mx-auto px-4 flex justify-between items-center">
             <div class="flex items-center gap-2">
                 <span class="bg-accent px-2 py-1 font-bold uppercase tracking-wider">Breaking</span>
-                <span class="font-medium">The Packaging of Progress: Beyond the Tin Can</span>
+                <span class="font-medium">The Compounding Cost of Survival</span>
             </div>
             <div class="hidden md:block text-gray-400">
                 Friday, November 13, 2026
@@ -33,7 +32,6 @@
         </div>
     </div>
 
-    <!-- Header -->
     <header class="border-b-4 border-brand bg-white">
         <div class="container mx-auto px-4 py-8 flex flex-col md:flex-row justify-between items-center gap-6">
             <a href="index.html" class="flex items-center gap-4">
@@ -49,42 +47,45 @@
         </div>
     </header>
 
-    <!-- Navigation -->
     <nav class="bg-gray-100 border-b border-gray-200 sticky top-0 z-50">
         <div class="container mx-auto px-4">
             <ul class="flex flex-wrap justify-center gap-6 py-3 text-sm font-bold uppercase tracking-widest text-gray-700">
                 <li><a href="index.html" class="text-brand hover:text-accent transition">Home</a></li>
-                <a href="articles/editorial/index.html" class="hover:text-accent transition">Editorial</a><a href="articles/sports/index.html" class="hover:text-accent transition">Sports</a><a href="articles/news/index.html" class="hover:text-accent transition">News</a>
+                <a href="articles/sports/index.html" class="hover:text-accent transition">Sports</a><a href="articles/news/index.html" class="hover:text-accent transition">News</a><a href="articles/editorial/index.html" class="hover:text-accent transition">Editorial</a>
             </ul>
         </div>
     </nav>
 
-    <!-- Main Content -->
     <main class="container mx-auto px-4 py-10">
         
-        <!-- Hero -->
-        
     <div class="relative bg-gray-900 text-white overflow-hidden group h-[500px]">
-        <img src="articles/news/the-packaging-of-progress-beyond-the-tin-can.jpg" alt="Hero" class="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-105 transition duration-700">
+        <img src="articles/editorial/the-compounding-cost-of-survival.jpg" alt="Hero" class="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:scale-105 transition duration-700">
         <div class="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent"></div>
         <div class="absolute bottom-0 left-0 p-8 w-full max-w-4xl">
-            <span class="bg-accent text-white text-xs font-bold px-2 py-1 uppercase tracking-widest mb-4 inline-block">News</span>
-            <a href="articles/news/the-packaging-of-progress-beyond-the-tin-can.html"><h1 class="font-serif text-4xl md:text-6xl font-black leading-tight hover:text-gray-300 transition mb-4">The Packaging of Progress: Beyond the Tin Can</h1></a>
-            <p class="text-gray-300 text-lg line-clamp-2 hidden md:block">The tin can is a silent sentinel in the Filipino kitchen. For decades, its metallic sheen has been the universal symbol of preserved protein, a staple...</p>
+            <span class="bg-accent text-white text-xs font-bold px-2 py-1 uppercase tracking-widest mb-4 inline-block">Editorial</span>
+            <a href="articles/editorial/the-compounding-cost-of-survival.html"><h1 class="font-serif text-4xl md:text-6xl font-black leading-tight hover:text-gray-300 transition mb-4">The Compounding Cost of Survival</h1></a>
+            <p class="text-gray-300 text-lg line-clamp-2 hidden md:block">The math of survival is becoming increasingly difficult to balance. For the average Filipino, inflation is not a dry statistic presented in a governme...</p>
         </div>
     </div>
     
 
-        <!-- Grid Layout -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 mt-12">
-            
-            <!-- Left Column: Latest News -->
             <div class="lg:col-span-8">
                 <div class="flex items-center border-b-2 border-brand pb-2 mb-8">
                     <h2 class="font-serif text-3xl font-bold">Latest News</h2>
                 </div>
                 <div class="space-y-8">
                     
+        <div class="flex flex-col md:flex-row gap-6 border-b border-gray-200 pb-6">
+            <div class="w-full md:w-1/3 shrink-0">
+                <a href="articles/news/the-packaging-of-progress-beyond-the-tin-can.html"><img src="articles/news/the-packaging-of-progress-beyond-the-tin-can.jpg" class="w-full h-48 object-cover hover:opacity-80 transition"></a>
+            </div>
+            <div class="flex flex-col justify-center">
+                <span class="text-xs font-bold text-accent uppercase tracking-wider mb-2">News</span>
+                <a href="articles/news/the-packaging-of-progress-beyond-the-tin-can.html"><h3 class="font-serif text-2xl font-bold leading-tight hover:text-accent transition mb-2">The Packaging of Progress: Beyond the Tin Can</h3></a>
+                <p class="text-gray-500 text-sm line-clamp-2">The tin can is a silent sentinel in the Filipino kitchen. For decades, its metallic sheen has been the universal symbol of preserved protein, a staple...</p>
+            </div>
+        </div>
         <div class="flex flex-col md:flex-row gap-6 border-b border-gray-200 pb-6">
             <div class="w-full md:w-1/3 shrink-0">
                 <a href="articles/editorial/beyond-the-bust-the-fragile-victory-of-policing-the-shadows.html"><img src="articles/editorial/beyond-the-bust-the-fragile-victory-of-policing-the-shadows.jpg" class="w-full h-48 object-cover hover:opacity-80 transition"></a>
@@ -115,50 +116,45 @@
                 <p class="text-gray-500 text-sm line-clamp-2">Imagine a Filipino citizen, perhaps a student in a remote province or a worker in a crowded city, seeking to stay informed about a critical national p...</p>
             </div>
         </div>
-        <div class="flex flex-col md:flex-row gap-6 border-b border-gray-200 pb-6">
-            <div class="w-full md:w-1/3 shrink-0">
-                <a href="articles/editorial/the-high-cost-of-silicon-secrets-when-corporate-ambition-meets-state-espionage.html"><img src="articles/editorial/the-high-cost-of-silicon-secrets-when-corporate-ambition-meets-state-espionage.jpg" class="w-full h-48 object-cover hover:opacity-80 transition"></a>
-            </div>
-            <div class="flex flex-col justify-center">
-                <span class="text-xs font-bold text-accent uppercase tracking-wider mb-2">Editorial</span>
-                <a href="articles/editorial/the-high-cost-of-silicon-secrets-when-corporate-ambition-meets-state-espionage.html"><h3 class="font-serif text-2xl font-bold leading-tight hover:text-accent transition mb-2">The High Cost of Silicon Secrets: When Corporate Ambition Meets State Espionage</h3></a>
-                <p class="text-gray-500 text-sm line-clamp-2">In the modern era, the most valuable currency is no longer gold or oil; it is data and the silicon chips that process it. We often view the titans of ...</p>
-            </div>
-        </div>
                 </div>
             </div>
 
-            <!-- Right Column: Sidebar -->
             <aside class="lg:col-span-4">
                 <div class="sticky top-24">
                     <div class="flex items-center border-b-2 border-brand pb-2 mb-8">
                         <h2 class="font-serif text-xl font-bold uppercase tracking-widest">Trending Now</h2>
                     </div>
-                    
+
                     
         <div class="flex gap-4 items-start mb-6 border-b border-gray-100 pb-4">
             <span class="text-4xl font-serif text-gray-200 font-black">01</span>
+            <div>
+                <a href="articles/editorial/the-high-cost-of-silicon-secrets-when-corporate-ambition-meets-state-espionage.html" class="font-bold font-serif text-lg leading-snug hover:text-accent transition block mb-1">The High Cost of Silicon Secrets: When Corporate Ambition Meets State Espionage</a>
+                <span class="text-xs text-gray-400 uppercase tracking-wider">Editorial</span>
+            </div>
+        </div>
+        <div class="flex gap-4 items-start mb-6 border-b border-gray-100 pb-4">
+            <span class="text-4xl font-serif text-gray-200 font-black">02</span>
             <div>
                 <a href="articles/news/the-high-cost-of-progress-when-urban-development-becomes-a-death-trap.html" class="font-bold font-serif text-lg leading-snug hover:text-accent transition block mb-1">The High Cost of Progress: When Urban Development Becomes a Death Trap</a>
                 <span class="text-xs text-gray-400 uppercase tracking-wider">News</span>
             </div>
         </div>
         <div class="flex gap-4 items-start mb-6 border-b border-gray-100 pb-4">
-            <span class="text-4xl font-serif text-gray-200 font-black">02</span>
+            <span class="text-4xl font-serif text-gray-200 font-black">03</span>
             <div>
                 <a href="articles/sports/choco-mucho-flying-titans-break-seven-game-skid-against-creamline-cool-smashers.html" class="font-bold font-serif text-lg leading-snug hover:text-accent transition block mb-1">Choco Mucho Flying Titans Break Seven-Game Skid Against Creamline Cool Smashers</a>
                 <span class="text-xs text-gray-400 uppercase tracking-wider">Sports</span>
             </div>
         </div>
         <div class="flex gap-4 items-start mb-6 border-b border-gray-100 pb-4">
-            <span class="text-4xl font-serif text-gray-200 font-black">03</span>
+            <span class="text-4xl font-serif text-gray-200 font-black">04</span>
             <div>
                 <a href="articles/editorial/the-scorched-reality-why-the-heat-index-is-a-crisis-of-inequality.html" class="font-bold font-serif text-lg leading-snug hover:text-accent transition block mb-1">The Scorched Reality: Why the Heat Index is a Crisis of Inequality</a>
                 <span class="text-xs text-gray-400 uppercase tracking-wider">Editorial</span>
             </div>
         </div>
 
-                    <!-- Advert / Subscribe Box -->
                     <div class="bg-gray-100 p-8 mt-10 text-center border-t-4 border-accent">
                         <h3 class="font-serif text-2xl font-bold mb-2">The Morning Briefing</h3>
                         <p class="text-sm text-gray-600 mb-4">Get the most important stories delivered to your inbox every morning.</p>
@@ -167,11 +163,9 @@
                     </div>
                 </div>
             </aside>
-
         </div>
     </main>
 
-    <!-- Footer -->
     <footer class="bg-brand text-white py-16 mt-10">
         <div class="container mx-auto px-4 text-center">
             <div class="flex justify-center items-center gap-4 mb-8">
